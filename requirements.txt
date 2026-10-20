@@ -1,0 +1,7 @@
+torch>=2.4
+numpy
+nibabel
+scikit-learn
+pandas
+scipy
+tqdm

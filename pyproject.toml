@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "poref-mil"
+version = "0.2.0"
+description = "Command-line interface for PoRef-MIL experiments"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.4", "numpy", "nibabel", "scikit-learn", "pandas", "scipy", "tqdm"]
+
+[project.scripts]
+poref = "poref.cli:main"
+
+[tool.setuptools]
+packages = ["poref", "classifier", "feature_ex", "relabel"]
+py-modules = ["earlyStopping"]
+include-package-data = false

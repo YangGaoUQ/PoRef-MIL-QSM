@@ -1,0 +1,228 @@
+{
+  "description": "SCHEMA TEMPLATE ONLY. Fixed independent test patients; five rotating train/validation folds on development patients. Five models are tested separately on the SAME test set, not ensembled. All IDs, paths, ages and counts are placeholders; replace with actual patient assignments.",
+  "test_design": "fixed_holdout",
+  "samples": [
+    {
+      "patient_id": "HC_000",
+      "label": 0,
+      "images": {
+        "QSM": "D:/MRI/QSM/HC_000.nii",
+        "T1w": "D:/MRI/T1w/HC_000.nii"
+      },
+      "slice_axis": 2,
+      "age": 60
+    },
+    {
+      "patient_id": "PD_001",
+      "label": 1,
+      "images": {
+        "QSM": "D:/MRI/QSM/PD_001.nii",
+        "T1w": "D:/MRI/T1w/PD_001.nii"
+      },
+      "slice_axis": 2,
+      "age": 61
+    },
+    {
+      "patient_id": "HC_002",
+      "label": 0,
+      "images": {
+        "QSM": "D:/MRI/QSM/HC_002.nii",
+        "T1w": "D:/MRI/T1w/HC_002.nii"
+      },
+      "slice_axis": 2,
+      "age": 62
+    },
+    {
+      "patient_id": "PD_003",
+      "label": 1,
+      "images": {
+        "QSM": "D:/MRI/QSM/PD_003.nii",
+        "T1w": "D:/MRI/T1w/PD_003.nii"
+      },
+      "slice_axis": 2,
+      "age": 63
+    },
+    {
+      "patient_id": "HC_004",
+      "label": 0,
+      "images": {
+        "QSM": "D:/MRI/QSM/HC_004.nii",
+        "T1w": "D:/MRI/T1w/HC_004.nii"
+      },
+      "slice_axis": 2,
+      "age": 64
+    },
+    {
+      "patient_id": "PD_005",
+      "label": 1,
+      "images": {
+        "QSM": "D:/MRI/QSM/PD_005.nii",
+        "T1w": "D:/MRI/T1w/PD_005.nii"
+      },
+      "slice_axis": 2,
+      "age": 65
+    },
+    {
+      "patient_id": "HC_006",
+      "label": 0,
+      "images": {
+        "QSM": "D:/MRI/QSM/HC_006.nii",
+        "T1w": "D:/MRI/T1w/HC_006.nii"
+      },
+      "slice_axis": 2,
+      "age": 66
+    },
+    {
+      "patient_id": "PD_007",
+      "label": 1,
+      "images": {
+        "QSM": "D:/MRI/QSM/PD_007.nii",
+        "T1w": "D:/MRI/T1w/PD_007.nii"
+      },
+      "slice_axis": 2,
+      "age": 67
+    },
+    {
+      "patient_id": "HC_008",
+      "label": 0,
+      "images": {
+        "QSM": "D:/MRI/QSM/HC_008.nii",
+        "T1w": "D:/MRI/T1w/HC_008.nii"
+      },
+      "slice_axis": 2,
+      "age": 68
+    },
+    {
+      "patient_id": "PD_009",
+      "label": 1,
+      "images": {
+        "QSM": "D:/MRI/QSM/PD_009.nii",
+        "T1w": "D:/MRI/T1w/PD_009.nii"
+      },
+      "slice_axis": 2,
+      "age": 69
+    },
+    {
+      "patient_id": "HC_010",
+      "label": 0,
+      "images": {
+        "QSM": "D:/MRI/QSM/HC_010.nii",
+        "T1w": "D:/MRI/T1w/HC_010.nii"
+      },
+      "slice_axis": 2,
+      "age": 70
+    },
+    {
+      "patient_id": "PD_011",
+      "label": 1,
+      "images": {
+        "QSM": "D:/MRI/QSM/PD_011.nii",
+        "T1w": "D:/MRI/T1w/PD_011.nii"
+      },
+      "slice_axis": 2,
+      "age": 71
+    }
+  ],
+  "folds": [
+    {
+      "train": [
+        "HC_002",
+        "PD_003",
+        "HC_004",
+        "PD_005",
+        "HC_006",
+        "PD_007",
+        "HC_008",
+        "PD_009"
+      ],
+      "val": [
+        "HC_000",
+        "PD_001"
+      ],
+      "test": [
+        "HC_010",
+        "PD_011"
+      ]
+    },
+    {
+      "train": [
+        "HC_000",
+        "PD_001",
+        "HC_004",
+        "PD_005",
+        "HC_006",
+        "PD_007",
+        "HC_008",
+        "PD_009"
+      ],
+      "val": [
+        "HC_002",
+        "PD_003"
+      ],
+      "test": [
+        "HC_010",
+        "PD_011"
+      ]
+    },
+    {
+      "train": [
+        "HC_000",
+        "PD_001",
+        "HC_002",
+        "PD_003",
+        "HC_006",
+        "PD_007",
+        "HC_008",
+        "PD_009"
+      ],
+      "val": [
+        "HC_004",
+        "PD_005"
+      ],
+      "test": [
+        "HC_010",
+        "PD_011"
+      ]
+    },
+    {
+      "train": [
+        "HC_000",
+        "PD_001",
+        "HC_002",
+        "PD_003",
+        "HC_004",
+        "PD_005",
+        "HC_008",
+        "PD_009"
+      ],
+      "val": [
+        "HC_006",
+        "PD_007"
+      ],
+      "test": [
+        "HC_010",
+        "PD_011"
+      ]
+    },
+    {
+      "train": [
+        "HC_000",
+        "PD_001",
+        "HC_002",
+        "PD_003",
+        "HC_004",
+        "PD_005",
+        "HC_006",
+        "PD_007"
+      ],
+      "val": [
+        "HC_008",
+        "PD_009"
+      ],
+      "test": [
+        "HC_010",
+        "PD_011"
+      ]
+    }
+  ]
+}
