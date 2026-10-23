@@ -1,4 +1,4 @@
-"""Configurable raw-image branches, axial context, and one optional FiLM."""
+"""Figure (a) diagnosis and a separate figure (c) bag relabeler."""
 import copy
 from contextlib import contextmanager, nullcontext
 import torch
@@ -55,7 +55,9 @@ class MultimodalEncoder(nn.Module):
         if self.fusion == "concatenation":
             return self.concat(torch.cat(features, dim=-1))
         if self.fusion == "mlp-level":
-            return self.mlp(torch.cat([feat.mean(1) for feat in features], dim=-1)).unsqueeze(1)
+            # Preserve the fused vector: one component per row, broadcast over
+            # the pooled feature axis so that max pooling returns that vector.
+            return self.mlp(torch.cat([feat.mean(1) for feat in features], dim=-1)).unsqueeze(-1).expand(-1, -1, 256)
         fused = features[0]
         for i, other in enumerate(features[1:]):
             shared = self.cross[i](fused, other, other)
@@ -65,31 +67,65 @@ class MultimodalEncoder(nn.Module):
 
 
 class PoRefNet(nn.Module):
+    """Slice diagnosis only: FEB -> max pooling -> MLP. No Z attention."""
     def __init__(self, modalities=1, fusion="cross-attention", age_position="none", axial_chunk_size=256, slice_batch_size=4):
         super().__init__()
-        self.fe1 = MultimodalEncoder(modalities, fusion, slice_batch_size)
-        self.fe2 = None  # Created at round 2, after FE1 has been trained.
-        self.axial = ZAxisSelfAttention(chunk_size=axial_chunk_size)
+        self.encoder = MultimodalEncoder(modalities, fusion, slice_batch_size)
         self.classifier = ClassifierMLP()
         self.age_position = age_position
         self.film = AgeFiLM(modalities if age_position == "pre" else 256) if age_position != "none" else None
-        self.current_round = 1
 
-    def start_round(self, number):
-        self.current_round = number
-        if number > 1:
-            if self.fe2 is None:
-                # Defined initialization: FE2 starts from trained FE1, then evolves.
-                self.fe2 = copy.deepcopy(self.fe1)
-                self.fe2.requires_grad_(True)
-            self.fe1.requires_grad_(False)
-            self.fe1.eval()
+    def _classify(self, features, age):
+        if self.age_position == "post":
+            features = self.film(features.transpose(1, 2), age).transpose(1, 2)
+        return self.classifier(features).squeeze(-1)
 
-    def train(self, mode=True):
-        super().train(mode)
-        if self.current_round > 1:
-            self.fe1.eval()
-        return self
+    def forward(self, images, age=None):
+        # Slices remain independent in the diagnostic path.
+        if self.film is not None and age is None:
+            raise ValueError("Age is required by the selected FiLM experiment")
+        repeated_age = None if age is None else age.reshape(1).expand(images.shape[0])
+        if self.age_position == "pre":
+            images = self.film(images.squeeze(2), repeated_age).unsqueeze(2)
+        features = self.encoder(images)
+        if isinstance(features, list):
+            # Decision-level ablation averages per-modality probabilities.
+            probabilities = torch.stack([self._classify(f, repeated_age).sigmoid() for f in features]).mean(0)
+            return torch.logit(probabilities.clamp(1e-6, 1 - 1e-6))
+        return self._classify(features, repeated_age)
+
+
+def bag_outputs(logits):
+    """One patient's raw scores feed BOTH branches of figure (c)."""
+    if logits.ndim != 1 or logits.numel() == 0:
+        raise ValueError("Expected a nonempty ordered slice logit vector")
+    probabilities = logits.sigmoid()
+    weights = logits.softmax(dim=0)
+    patient_probability = (weights * probabilities).sum()
+    return {"logits": logits, "slice_probs": probabilities,
+            "attention_weights": weights, "bag_probability": patient_probability}
+
+
+class BagRelabelNet(PoRefNet):
+    """Fresh Z attention/head, initialized from the preceding diagnostic FEB."""
+    def __init__(self, modalities=1, fusion="cross-attention", age_position="none",
+                 axial_chunk_size=256, slice_batch_size=4):
+        super().__init__(modalities, fusion, age_position, axial_chunk_size, slice_batch_size)
+        self.axial = ZAxisSelfAttention(chunk_size=axial_chunk_size)
+
+    @classmethod
+    def from_diagnosis(cls, diagnosis, axial_chunk_size=256):
+        model = cls.__new__(cls)
+        nn.Module.__init__(model)
+        model.encoder = copy.deepcopy(diagnosis.encoder)
+        model.encoder.requires_grad_(True)
+        model.age_position = diagnosis.age_position
+        model.film = copy.deepcopy(diagnosis.film)
+        if model.film is not None:
+            model.film.requires_grad_(True)
+        model.axial = ZAxisSelfAttention(chunk_size=axial_chunk_size)
+        model.classifier = ClassifierMLP()
+        return model
 
     def _classify(self, features, age):
         if self.age_position == "post":
@@ -97,17 +133,5 @@ class PoRefNet(nn.Module):
         features = self.axial(features.unsqueeze(0)).squeeze(0)
         return self.classifier(features).squeeze(-1)
 
-    def forward(self, images, age=None):
-        # One complete patient sequence per call, preserving all Z context.
-        if self.film is not None and age is None:
-            raise ValueError("Age is required by the selected FiLM experiment")
-        repeated_age = None if age is None else age.reshape(1).expand(images.shape[0])
-        if self.age_position == "pre":
-            images = self.film(images.squeeze(2), repeated_age).unsqueeze(2)
-        encoder = self.fe1 if self.current_round == 1 else self.fe2
-        features = encoder(images)
-        if isinstance(features, list):
-            # Shared axial module/head; decision-level fusion averages probabilities.
-            probabilities = torch.stack([self._classify(f, repeated_age).sigmoid() for f in features]).mean(0)
-            return torch.logit(probabilities.clamp(1e-6, 1 - 1e-6))
-        return self._classify(features, repeated_age)
+    def forward_bag(self, images, age=None):
+        return bag_outputs(self(images, age))

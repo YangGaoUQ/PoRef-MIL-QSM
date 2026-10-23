@@ -10,8 +10,8 @@ from torch.nn import functional as F
 
 from poref.data import load_manifest, load_patient
 from poref.metrics import evaluate, summarize
-from poref.model import PoRefNet
-from poref.pdm import decide
+from poref.model import PoRefNet, BagRelabelNet
+from poref.pdm import decide, WINDOW_SCORE_FORMULA
 
 
 def write_json(path, value):
@@ -100,11 +100,87 @@ def save_predictions(path, rows):
             writer.writerow(record)
 
 
+
+def evaluate_bags(model, ids, samples, config, device):
+    """Relabel checkpoints use the figure-(c) continuous patient probability."""
+    model.eval()
+    labels, scores = [], []
+    with torch.no_grad():
+        for pid in ids:
+            images, age = patient_input(samples[pid], config, device)
+            scores.append(float(model.forward_bag(images, age)["bag_probability"]))
+            labels.append(samples[pid]["label"])
+    return evaluate(labels, scores, [int(p >= 0.5) for p in scores])
+
+
+def train_stage(model, stage, number, lr, pseudo, fold, samples, config,
+                device, seed, best_path, fold_dir, log):
+    # Optimizer, scheduler and early stopping are reset for EVERY stage.
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=config["weight_decay"])
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="max", factor=0.5, patience=10, min_lr=1e-7)
+    best_auc, stale = -1.0, 0
+    for epoch in range(1, config["num_epochs"] + 1):
+        model.train()
+        train_ids = list(fold["train"])
+        random.shuffle(train_ids)
+        total_loss = 0.0
+        for start in range(0, len(train_ids), config["batch_size"]):
+            batch = train_ids[start:start + config["batch_size"]]
+            optimizer.zero_grad(set_to_none=True)
+            for pid in batch:
+                images, age = patient_input(samples[pid], config, device)
+                if stage == "relabel":
+                    # Aggregate probabilities BEFORE applying patient Focal Loss.
+                    probability = model.forward_bag(images, age)["bag_probability"]
+                    patient_logit = torch.logit(probability.clamp(1e-6, 1 - 1e-6))
+                    target = torch.tensor(float(samples[pid]["label"]), device=device)
+                    loss = focal_loss(patient_logit, target, config["alpha"], config["gamma"])
+                else:
+                    logits = model(images, age)
+                    if config["supervision"] == "traditional-mil":
+                        patient_logit = torch.logit(logits.sigmoid().mean().clamp(1e-6, 1 - 1e-6))
+                        target = torch.tensor(float(samples[pid]["label"]), device=device)
+                        loss = focal_loss(patient_logit, target, config["alpha"], config["gamma"])
+                    else:
+                        targets = make_targets(set(fold["train"]), samples, pseudo, number, device, len(logits), pid)
+                        loss = focal_loss(logits, targets, config["alpha"], config["gamma"])
+                (loss / len(batch)).backward()
+                total_loss += float(loss.detach())
+            optimizer.step()
+        validation = (evaluate_bags(model, fold["val"], samples, config, device)
+                      if stage == "relabel" else
+                      evaluate_patients(model, fold["val"], samples, config, device)[1])
+        auc = validation["auc"]
+        if auc is None:
+            raise ValueError("Checkpoint selection requires both classes in validation")
+        scheduler.step(auc)
+        if auc > best_auc + 1e-4:
+            best_auc, stale = auc, 0
+            torch.save({"format_version": 2, "role": stage, "model": model.state_dict(),
+                        "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
+                        "round": number, "epoch": epoch, "seed": seed, "config": config,
+                        "validation_scoring": "attention_weighted_probability" if stage == "relabel" else config["aggregation"]}, best_path)
+        else:
+            stale += 1
+        log.append({"stage": stage, "round": number, "epoch": epoch,
+                    "train_loss": total_loss / len(train_ids), "validation": validation,
+                    "lr": optimizer.param_groups[0]["lr"]})
+        write_json(fold_dir / "training_log.json", log)
+        print(f"Round {number} {stage} epoch {epoch}: loss={total_loss/len(train_ids):.6f} val_auc={auc:.6f}", flush=True)
+        if stale >= config["patience"]:
+            break
+    model.load_state_dict(torch.load(best_path, map_location=device, weights_only=True)["model"])
+
+
 def main(config):
     doc, samples = load_manifest(config["split_file"], config["modalities"], require_age=config["age_position"] != "none")
+    if doc["test_design"] != "fixed_holdout" or len(doc["folds"]) != 5:
+        raise ValueError("PoRef-MIL requires five development train/validation folds and one fixed_holdout test set")
     if config.get("n_splits") is not None and config["n_splits"] != len(doc["folds"]):
         raise ValueError("--folds does not match the explicit manifest fold count")
-    config = {**config, "n_splits": len(doc["folds"])}
+    config = {**config, "n_splits": len(doc["folds"]),
+              "score_formula": WINDOW_SCORE_FORMULA if config["aggregation"] == "pdm" else "mean(slice_probabilities)"}
     if config["seed"] + len(doc["folds"]) - 1 >= 2**32:
         raise ValueError("Fold seeds exceed the NumPy seed range")
     for fold in doc["folds"]:
@@ -123,7 +199,7 @@ def main(config):
         raise ValueError("CUDA requested but unavailable")
     device = torch.device(device_name)
     output.mkdir(parents=True, exist_ok=True)
-    write_json(output / "config.json", {**config, "resolved_device": device_name, "torch_version": torch.__version__, "score_formula": "posterior * (1 - binary_entropy_bits)" if config["aggregation"] == "pdm" else "mean(slice_probabilities)", "status": "started"})
+    write_json(output / "config.json", {**config, "resolved_device": device_name, "torch_version": torch.__version__, "score_formula": WINDOW_SCORE_FORMULA if config["aggregation"] == "pdm" else "mean(slice_probabilities)", "status": "started"})
     write_json(output / "resolved_splits.json", doc)
     metrics_all, mean_all = [], []
     for fold_index, fold in enumerate(doc["folds"], 1):
@@ -132,57 +208,30 @@ def main(config):
         fold_dir = output / f"fold_{fold_index}"
         fold_dir.mkdir()
         write_json(fold_dir / "split.json", {**fold, "seed": fold_seed, "counts": {split: {"HC": sum(samples[p]["label"] == 0 for p in fold[split]), "disease": sum(samples[p]["label"] == 1 for p in fold[split])} for split in ("train", "val", "test")}})
-        model = PoRefNet(len(config["modalities"]), config["fusion"], config["age_position"], config["axial_chunk_size"], config["slice_batch_size"]).to(device)
         pseudo = {}
         log = []
+        model = None
         for number in range(1, config["rounds"] + 1):
-            model.start_round(number)
-            model.to(device)
             lr = config["round_lrs"][number - 1]
-            optimizer = torch.optim.Adam((p for p in model.parameters() if p.requires_grad), lr=lr, weight_decay=config["weight_decay"])
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=10, min_lr=1e-7)
-            best_auc, stale = -1.0, 0
-            best_path = fold_dir / f"best_round_{number}.pth"
-            for epoch in range(1, config["num_epochs"] + 1):
-                model.train()
-                train_ids = list(fold["train"])
-                random.shuffle(train_ids)
-                total_loss = 0.0
-                # Accumulate one ordered patient sequence at a time.
-                for start in range(0, len(train_ids), config["batch_size"]):
-                    batch = train_ids[start:start + config["batch_size"]]
-                    optimizer.zero_grad(set_to_none=True)
-                    for pid in batch:
-                        images, age = patient_input(samples[pid], config, device)
-                        logits = model(images, age)
-                        if config["supervision"] == "traditional-mil":
-                            patient_logit = torch.logit(logits.sigmoid().mean().clamp(1e-6, 1 - 1e-6))
-                            loss = focal_loss(patient_logit, torch.tensor(float(samples[pid]["label"]), device=device), config["alpha"], config["gamma"])
-                        else:
-                            targets = make_targets(set(fold["train"]), samples, pseudo, number, device, len(logits), pid)
-                            loss = focal_loss(logits, targets, config["alpha"], config["gamma"])
-                        (loss / len(batch)).backward()
-                        total_loss += float(loss.detach())
-                    optimizer.step()
-                _, validation, _ = evaluate_patients(model, fold["val"], samples, config, device)
-                auc = validation["auc"]
-                scheduler.step(auc)
-                improved = auc > best_auc + 1e-4
-                if improved:
-                    best_auc, stale = auc, 0
-                    torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(), "round": number, "epoch": epoch, "seed": fold_seed, "config": config}, best_path)
-                else:
-                    stale += 1
-                log.append({"round": number, "epoch": epoch, "train_loss": total_loss / len(train_ids), "validation": validation, "lr": optimizer.param_groups[0]["lr"]})
-                write_json(fold_dir / "training_log.json", log)
-                print(f"Fold {fold_index} round {number} epoch {epoch}: loss={total_loss/len(train_ids):.6f} val_auc={auc:.6f}", flush=True)
-                if stale >= config["patience"]:
-                    break
-            checkpoint = torch.load(best_path, map_location=device, weights_only=True)
-            model.load_state_dict(checkpoint["model"])
-            if number < config["rounds"]:
-                pseudo = update_pseudo_labels(model, fold["train"], samples, config, device)
-                write_json(fold_dir / f"pseudo_labels_for_round_{number + 1}.json", {"source_round": number, "threshold": config["relabel_threshold"], "train_only": True, "labels": pseudo})
+            if number > 1:
+                # Only the preceding BEST diagnostic encoder initializes the
+                # relabeler. Its attention and MLP are freshly initialized.
+                relabeler = BagRelabelNet.from_diagnosis(model, config["axial_chunk_size"]).to(device)
+                del model
+                relabel_path = fold_dir / f"best_relabel_for_round_{number}.pth"
+                train_stage(relabeler, "relabel", number, lr, {}, fold, samples,
+                            config, device, fold_seed, relabel_path, fold_dir, log)
+                pseudo = update_pseudo_labels(relabeler, fold["train"], samples, config, device)
+                write_json(fold_dir / f"pseudo_labels_for_round_{number}.json",
+                           {"source_round": number - 1, "source_module": "bag_relabeler",
+                            "source_checkpoint": relabel_path.name,
+                            "threshold": config["relabel_threshold"], "train_only": True, "labels": pseudo})
+                del relabeler
+            # Every diagnostic round starts from fresh network weights.
+            model = PoRefNet(len(config["modalities"]), config["fusion"], config["age_position"],
+                             config["axial_chunk_size"], config["slice_batch_size"]).to(device)
+            train_stage(model, "diagnosis", number, lr, pseudo, fold, samples,
+                        config, device, fold_seed, fold_dir / f"best_round_{number}.pth", fold_dir, log)
         # Test labels are used here only, for final metrics, never for pseudo updates.
         val_rows, val_metrics, _ = evaluate_patients(model, fold["val"], samples, config, device)
         rows, metrics, mean_metrics = evaluate_patients(model, fold["test"], samples, config, device)

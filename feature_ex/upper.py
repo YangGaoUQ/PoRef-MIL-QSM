@@ -72,13 +72,14 @@ class UpperFeatureExtractor(nn.Module):
             num_heads=num_heads
         )
 
-    def forward(self, x):
-
-        x = self.tokenization(x)
-
-        x = self.block1(x)
-        x = self.block2(x)
-
-        return x
+    def forward(self, x, return_projection=False):
+        # Only raw images need tokenization. Later FEBs receive fused tokens.
+        if x.ndim == 4:
+            x = self.tokenization(x)
+        elif x.ndim != 3 or x.shape[-2:] != (256, 256):
+            raise ValueError("Expected a raw slice batch or [B,256,256] tokens")
+        projection_tokens = self.block1(x)
+        output = self.block2(projection_tokens)
+        return (output, projection_tokens) if return_projection else output
 
 

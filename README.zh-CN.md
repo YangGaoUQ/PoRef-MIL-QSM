@@ -1,8 +1,8 @@
-# PoRef-MIL: Multimodal MRI Classification with Iterative Relabeling and Posterior Decision Modeling
+# PoRef-MIL: QSM Classification with Iterative Relabeling and Posterior Decision Modeling
 
 [English](README.md) | **简体中文**
 
-本仓库实现 PoRef-MIL 的多模态 MRI 分类流程，结合全局与局部特征提取、轴向自注意力、迭代切片重标签及患者级后验决策模块（Posterior Decision Module, PDM），支持 PD/HC 与 MS/HC 实验。
+本仓库实现以 QSM 为主输入的 PoRef-MIL 分类流程，并保留多模态消融配置，结合全局与局部特征提取、轴向自注意力、迭代切片重标签及患者级后验决策模块（Posterior Decision Module, PDM），支持 PD/HC 与 MS/HC 实验。
 
 ## 🔬 Abstract
 
@@ -12,8 +12,8 @@
 
 - **Multimodal MRI**：支持 QSM、T1w，以及按实验配置提供的其他已配准模态。
 - **Global–Local Feature Extraction**：四个 Transformer/CNN 多分支块通过 Cross-Attention 融合特征。
-- **Iterative Relabeling**：轮次训练患者的切片预测。
-- **Posterior Decision Module**：以双向后验和局部连续支持聚合患者级决策。
+- **Iterative Relabeling**：由独立重标签网络更新训练切片标签，再训练诊断网络。
+- **Posterior Decision Module**：以双向后验和置信度加权窗口评分生成患者级决策。
 - **Age-conditioned FiLM**：年龄经 sin/cos 编码及 MLP 生成缩放和偏移，支持在特征提取前或后调制输入/特征。
 
 ## 🏆 Results
@@ -26,30 +26,20 @@ PoRef-MIL 在 PD 数据集上取得 AUC **0.942±0.002**、ACC **0.926±0.008**�
 
 1. **Feature Extraction**：每个模态通过四个多分支特征提取块，融合注意力全局特征和卷积局部特征。
 2. **Multimodal Fusion**：默认使用跨模态 Cross-Attention，可切换其他融合方式进行消融。
-3. **Axial Self-Attention**：沿 Z 轴建立切片上下文，保持输入与输出切片索引对应。
+3. **Axial Self-Attention**：仅在重标签网络中沿 Z 轴建立切片上下文，测试诊断网络不包含该模块。
 4. **Slice Classification**：MLP 输出切片 logit，经 Sigmoid 得到疾病概率。
-5. **Iterative Relabeling**：第一轮训练 FE1，后续轮冻结 FE1，通过原图和上一轮标签训练 FE2。
+5. **Iterative Relabeling**：诊断网络初始化后，交替训练独立重标签网络和新的诊断网络；仅 FEB 权重从诊断网络传给下一重标签阶段。
 6. **PDM**：单次 Forward–Backward、熵置信度和滑动窗口输出患者级结果。
 
 ```text
-已配准的多模态 MRI
-        │
-        ▼
-患者级标准化 → 有序 2D 切片序列
-        │
-        ▼
-每模态四个多分支特征提取块 → 模态融合
-        │
-        ▼
-Z 轴自注意力 → MLP → 切片疾病概率
-        │
-        ├── 训练：预测标签 → 下一轮训练集监督（K 轮）
-        │
-        ▼
-单次 Forward–Backward → 后验概率 → 熵与置信度
-        │
-        ▼
-支持评分 → 滑动窗口 → 患者分类与 ROC-AUC 评分
+训练：患者标签 → 初始化诊断网络
+     → 复制最佳 FEB → Z 轴注意力 → 重标签分类头
+     → Sigmoid 切片概率 + Softmax 切片权重 → 患者 Focal Loss
+     → 训练切片新标签 → 重新初始化并训练诊断网络 → 下一轮
+
+测试：QSM → 有序切片 → 四级 FEB → 最大池化 → MLP
+     → 切片疾病概率 → 一次双向后验细化 → 熵与置信度
+     → 置信度加权窗口评分 → 最大窗口评分 → 患者诊断
 ```
 
 ### Key Features
@@ -58,7 +48,7 @@ Z 轴自注意力 → MLP → 切片疾病概率
 - 固定独立测试集，开发集内部五折训练/验证，分别评价五个模型。
 - 单模态、双模态及可配置多模态输入。
 - 支持 128 张 PD 切片、96 张 MS 切片及显式指定的其他序列长度。
-- K=1–5 重标签、融合方式、年龄位置和 PDM 消融。
+- K=1–5 总训练轮数、融合方式、年龄位置和 PDM 消融。
 - 保存患者名单、模型、伪标签、切片概率、后验、ROC 与逐折指标。
 
 ## 📁 Project Structure
@@ -171,6 +161,8 @@ python -m poref preprocess --input-dir "D:/MRI/registered" --output "D:/MRI/resa
 
 A–E 是患者级开发集的五份。各模型按验证集选择权重，完成最后一轮训练后分别测试同一个 T。测试患者始终不参与训练。
 
+主训练入口强制使用 `fixed_holdout` 和五个开发集训练／验证折，五个模型分别测试同一固定测试集。其它划分协议在主入口中会被拒绝。
+
 #### 4. Patient Split File
 
 复制并编辑 `examples/splits.template.json`，填写真实患者和路径。模板包含 10 个开发患者、2 个固定测试患者，仅用于展示结构，**不是实际实验数据或人数**。
@@ -212,14 +204,14 @@ A–E 是患者级开发集的五份。各模型按验证集选择权重，完�
 
 ### Training
 
-以下示例使用 PowerShell。路径、窗口长度和阈值应替换为实际实验配置；`L=5`、`T_w=0.6` 只是调用示例，不代表论文最优设置。
+以下 PowerShell 命令训练 QSM 主模型。命令中的窗口长度为 5、判定阈值为 0.6；运行时填写实验使用的路径、窗口长度和阈值。窗口参数使用训练集或验证集选择，测试集用于最终评价。
 
 ```powershell
-# 双模态 PoRef-MIL：固定测试集，开发集五折，K=5
+# QSM PoRef-MIL：固定测试集，开发集五折，K=5
 python train_val.py `
   --mode poref `
   --data_split_file "D:/splits/pd.json" `
-  --modalities QSM T1w `
+  --modalities QSM `
   --save_dir "D:/results/pd_k5" `
   --batch_size 1 `
   --slice-batch-size 4 `
@@ -252,7 +244,7 @@ MS: --expected-test-counts 20 20
 
 #### Evaluation during Training
 
-每个模型完成最终重标签轮次后，会自动评价该折验证集及固定测试集。输出示例：
+每个模型完成最终诊断训练轮次后，会自动评价该折验证集及固定测试集。输出示例：
 
 ```text
 pd_k5/
@@ -264,6 +256,8 @@ pd_k5/
 │   ├── split.json
 │   ├── best_round_1.pth
 │   ├── best_round_5.pth
+│   ├── best_relabel_for_round_2.pth
+│   ├── best_relabel_for_round_5.pth
 │   ├── pseudo_labels_for_round_2.json
 │   ├── training_log.json
 │   ├── patient_predictions.json
@@ -315,9 +309,9 @@ python -m poref postprocess `
 | `--batch_size` | `8` | 每次优化累计患者数；上面的示例显式使用 1 |
 | `--slice-batch-size` | `4` | FE 内部切片批大小 |
 | `--learning_rate` | `0.0001` | 第一轮学习率，并按比例缩放默认轮次学习率 |
-| `--num_epochs` | `300` | 每轮最大 epoch 数 |
-| `--num_folds` | 读取 JSON | 可显式检查是否与划分中的折数一致 |
-| `--rounds` | `5` | K 轮重标签，可选 1–5 |
+| `--num_epochs` | `300` | 每个诊断或重标签训练阶段的最大 epoch 数 |
+| `--num_folds` | `5` | 主流程要求 JSON 包含固定测试集及五个开发集训练／验证折 |
+| `--rounds` | `5` | K 轮诊断训练（含初始化），对应 K−1 次重标签，可选 1–5 |
 | `--round-lrs` | 默认轮次序列 | 可显式提供与 K 等长的学习率列表 |
 | `--patience` | `50` | 验证 AUC 早停耐心值 |
 | `--weight-decay` | `0.00001` | Adam 权重衰减 |
@@ -339,7 +333,7 @@ python -m poref postprocess `
 | `--device` | `auto` | `auto`、`cpu`、`cuda` |
 | `--dry-run` | 关闭 | 只预览参数 |
 
-PDM 转移概率及先验的默认值是可配置的实现初值，不能视为已经确定的论文最优值。窗口和阈值应预先确定或仅使用训练/验证集选择。
+PDM 的健康和疾病状态自保持概率均默认为 0.9，初始健康概率默认为 0.5，均由命令行参数配置。窗口长度和判定阈值运行时必填，使用训练集或验证集选择。
 
 ## 🔧 Model Architecture Details
 
@@ -348,25 +342,25 @@ PDM 转移概率及先验的默认值是可配置的实现初值，不能视为�
 每个模态串联四个 Extraction Block：
 
 - **Upper branch**：行向量线性 token 化得到 256 个 256 维 token，经过两组 LayerNorm、自注意力、MLP 和残差连接。
-- **Middle branch**：LayerNorm、重排和 1×1 卷积，得到 `[128,16,16]` 特征图。
+- **Middle branch**：从第一个注意力前馈模块后分叉，经过 LayerNorm、重排和 1×1 卷积，得到 `[128,16,16]` 特征图。
 - **Lower branch**：四组 3×3 Conv、BatchNorm、ReLU、MaxPool；与中间分支拼接，再经过 DenseFeatureConvBlock 和通道变换。
-- **Cross-Attention**：上分支为 Q，下分支为 K/V，输出 `[256,256]` 特征。
+- **Cross-Attention**：上分支为 Q，下分支为 K/V；归一化和多头交叉注意力后接残差连接、LayerNorm、GELU 前馈 MLP 和第二次残差连接，输出 `[256,256]` 特征。
 
 四块 CNN 分支始终接收原图，后续块的 token 输入来自前一块。
 
 ### 2. Axial Self-Attention
 
-Z 轴自注意力对特征矩阵的每个对应位置，沿完整 Z 张切片交换上下文：标量特征经 `1→64` 投影，执行 8 头自注意力、残差连接和 `64→128→64` 前馈网络，再投影回标量。输入与输出均为 `[1,Z,N,256]`，常规融合下 N=256，MLP-level 融合下 N=1。实现按独立特征位置分块，不切断 Z 轴序列，并在训练时使用梯度重计算控制中间激活占用。
+Z 轴自注意力仅用于重标签网络，对特征矩阵的每个对应位置，沿完整 Z 张切片交换上下文：标量特征经 `1→64` 投影，执行 8 头自注意力、残差连接和 `64→128→64` 前馈网络，再投影回标量。输入与输出均为 `[1,Z,N,256]`，N=256；MLP-level 融合将融合向量的每个分量沿末维复制，保持同样的矩阵尺寸。实现按独立特征位置分块，不切断 Z 轴序列，并在训练时使用梯度重计算控制中间激活占用。
 
 ### 3. Slice Classifier
 
-分类头接收轴向注意力输出的切片特征，先对每张切片的 token 做均值池化，得到 256 维向量，再通过以下 MLP：
+诊断分类头接收 FEB 输出；重标签分类头接收 Z 轴注意力输出。二者均沿每个 token 的特征维执行最大池化（`[Z,256,256] → [Z,256]`），再通过独立参数的同结构 MLP：
 
 ```text
 256 → 512 → 1024 → 512 → 256 → 128 → 2 → 1
 ```
 
-每个隐藏线性层后使用 ReLU，最后一层输出 logit，再经 Sigmoid 转换为疾病概率。MLP-level 融合已将每个模态的 token 池化，分类头接收的 token 数为 1，其余融合方式通常为 256。
+每个隐藏线性层后使用 ReLU，最后一层输出 logit，再经 Sigmoid 转换为疾病概率。MLP-level 融合将 256 维向量的每个分量沿末维复制，最大池化后保留原融合向量；该分支用于融合消融。
 
 ### 4. Iterative Relabeling
 
@@ -374,12 +368,12 @@ Z 轴自注意力对特征矩阵的每个对应位置，沿完整 Z 张切片交
 
 **图 1｜网络与迭代重标签。** 切片经过四个特征提取块得到分类特征；Z 轴注意力结合切片上下文生成预测标签，再用于后续轮次训练，逐步更新切片监督。[查看原始 PDF](docs/figures/figure-1-framework.pdf)。
 
-图文对应说明：原图标注了 Max Pooling 和 Soft-Max 加权 bag-level loss；当前主代码采用 token 均值池化与切片级 Focal Loss，这两处尚未与图示统一。
+1. **Round 1**：训练患者标签初始化切片标签，训练诊断网络（四级 FEB→最大池化→MLP），保存最佳患者级验证 AUC checkpoint。
+2. **Round 2–K 的重标签阶段**：复制上一轮最佳诊断 FEB 至独立重标签网络，重新初始化 Z 轴注意力及分类头。FEB 不冻结。同一组 logits 经 Sigmoid 得到切片概率，经 Softmax 得到切片权重，点积形成患者概率，再计算患者标签的 Focal Loss。用患者级聚合概率的验证 AUC 选重标签 checkpoint。
+3. 载入最佳重标签 checkpoint，仅为训练患者生成切片标签（Sigmoid 概率≥0.5，阈值可配置）。
+4. 重新初始化整个诊断网络，以新切片标签训练；切片 Focal Loss 在每名患者内部取均值。诊断验证评分使用所选聚合方式（默认 PDM），其最佳 FEB 提供给下一重标签阶段。测试仅使用最终诊断网络及 PDM。
 
-1. **Round 1**：将训练患者标签作为初始切片监督，训练 FE1、轴向注意力和分类器。
-2. 载入该轮最佳验证模型，生成训练患者的有序切片预测标签。
-3. **Round 2**：FE2 从已训练 FE1 复制初始化；冻结 FE1 参数及 BatchNorm 状态。
-4. **Round 2–K**：FE2 输入原始切片，用上一轮离散预测标签作为损失函数的监督目标训练；这些标签不拼接进影像，也不作为 FE2 的额外输入通道。除最终轮外，各轮最佳模型产生下一轮训练标签。
+`--rounds 5` 表示一次初始化加四次重标签／诊断训练。每阶段独立创建 Adam、ReduceLROnPlateau 和早停状态。每轮重标签阶段与该轮诊断阶段使用相同的学习率、最大 epochs 和早停规则。诊断网络与重标签网络分别训练并保存 checkpoint。
 
 验证和测试始终使用真实患者标签评价，不进入伪标签更新。伪标签以切片概率 `>= --relabel-threshold` 离散化（默认阈值 0.5）。当 K=5 且第一轮学习率 `--learning_rate=1e-4` 时，各轮初始学习率为：
 
@@ -387,31 +381,37 @@ Z 轴自注意力对特征矩阵的每个对应位置，沿完整 Z 张切片交
 [1e-4, 5e-5, 3e-5, 1e-5, 5e-6]
 ```
 
-K<5 时取前 K 项；改变 `--learning_rate` 会同比例缩放该序列。可用 `--round-lrs` 显式覆盖，必须提供恰好 K 个值。每轮重新创建优化器与学习率调度器，载入该轮最佳验证权重后再进入下一轮。
+K<5 时取前 K 项；改变 `--learning_rate` 会同比例缩放该序列。可用 `--round-lrs` 显式覆盖，必须提供恰好 K 个值。每个阶段重新创建优化器与学习率调度器，载入该轮最佳验证权重后再进入下一轮。
 
 ### 5. Posterior Decision Module
 
 ![图 2：切片概率的双向后验细化与患者级决策](docs/figures/figure-2-pdm.png)
 
-**图 2｜后验决策流程。** 将有序切片概率输入 HC/疾病两状态模型，经一次 Forward–Backward 得到双向后验，再结合熵置信度与滑动窗口生成患者级诊断。图中的状态连接表示转移关系；当前实现不进行最优路径搜索。[查看原始 PDF](docs/figures/figure-2-pdm.pdf)。
+**图 2｜后验决策流程。** 将有序切片概率输入 HC/疾病两状态模型，经一次 Forward–Backward 得到双向后验，再结合熵置信度与滑动窗口生成患者级诊断。图中的状态连接表示转移关系；后验细化采用前向—后向递推。[查看原始 PDF](docs/figures/figure-2-pdm.pdf)。
 
-对原始有序疾病概率执行**一次** Forward–Backward，获得切片疾病后验概率 p_i。随后计算：
+对原始有序切片疾病概率执行**一次** Forward–Backward，获得疾病后验 q_i。
 
 ```math
-H_i = -p_i\log_2 p_i -(1-p_i)\log_2(1-p_i)
+H_i=-q_i\log_2q_i-(1-q_i)\log_2(1-q_i)
 ```
 
 ```math
-C_i = 1-H_i, \qquad R_i = p_i C_i
+C_i=1-H_i
 ```
 
-对长度 L 的窗口计算：
+在长度为 L 的窗口中，以置信度为权重对疾病后验取加权平均：
 
 ```math
-Q_k = \frac{1}{L}\sum_{i=k}^{k+L-1}R_i, \qquad S = \max_k Q_k
+W_j=\frac{\sum_{i=j}^{j+L-1} C_iq_i}{\sum_{i=j}^{j+L-1} C_i}
 ```
 
-当 `S > T_w` 时判为疾病，否则为 HC；S 用于患者级 ROC-AUC。PDM 不包含新增可训练分类器，不执行 Viterbi 搜索或重复 Forward–Backward。
+```math
+S=\max_j W_j
+```
+
+窗口步长为 1，不补零。置信度总和为零的窗口无有效评分，在输出中标记为 `null`，不参与最大值选择；若所有窗口均无效，程序报错，不自动判为健康。
+当 `S > T_w` 时判为疾病，否则为 HC；S 用于患者级 ROC-AUC。训练验证、测试、predict 和独立后处理使用同一公式。
+PDM 不使用硬切片标签加权，不执行 Viterbi、额外低通滤波或重复 Forward–Backward。
 
 #### Slice-level Visualization
 
@@ -419,7 +419,7 @@ Q_k = \frac{1}{L}\sum_{i=k}^{k+L-1}R_i, \qquad S = \max_k Q_k
 
 **图 4｜切片与序列决策示例。** 上、下两组分别展示 128 张和 96 张切片序列中的代表性影像、异常概率及 PDM 标出的连续异常区间，用于说明局部影像与序列决策的对应关系。[查看原始 PDF](docs/figures/figure-4-visualization.pdf)。
 
-图中热图为提供的论文图示；当前旧 heatmap 脚本仅广播整张切片的概率，不能直接生成同等的像素级热图。
+图中热图为论文图示。`heatmap` 脚本将切片概率广播到整张切片，输出属于切片级可视化。
 
 ### 6. Age-conditioned FiLM
 
@@ -459,16 +459,20 @@ e_{2j+1}(a)=\cos(u\omega_j)
 | 配置 | 实际调用顺序 | 调制通道数 C |
 |---|---|---|
 | `--age-position none`（默认） | 不启用年龄编码和 FiLM | 不适用 |
-| `--age-position pre` | 体积标准化 → Sin/Cos 年龄编码生成 γ、β → 调制各模态输入切片 → FE → 模态融合 → 轴向注意力 → 分类头 | 输入模态数 M |
-| `--age-position post` | FE → 模态融合 → 使用 Sin/Cos 年龄编码生成的 γ、β 调制特征 → 轴向注意力 → 分类头 | 特征维度 256 |
+| `--age-position pre` | 体积标准化 → Sin/Cos 年龄编码生成 γ、β → 调制各模态输入切片 → FE → 模态融合 → 分类头（仅重标签阶段在分类前加入 Z 轴注意力） | 输入模态数 M |
+| `--age-position post` | FE → 模态融合 → 使用 Sin/Cos 年龄编码生成的 γ、β 调制特征 → 分类头（仅重标签阶段在分类前加入 Z 轴注意力） | 特征维度 256 |
 
-Pre-FE 对每个输入模态使用一个缩放与偏移，并在切片像素上广播。Post-FE 对 256 维特征通道调制，并在 token 上广播；采用 decision-level 融合时，同一个 FiLM 分别用于各模态特征，随后共享轴向注意力与分类头，再平均概率。
+Pre-FE 对每个输入模态使用一个缩放与偏移，并在切片像素上广播。Post-FE 对 256 维特征通道调制，并在 token 上广播；采用 decision-level 融合时，同一个 FiLM 分别用于各模态特征，随后使用共享分类头并平均概率；轴向注意力仅用于重标签网络。
 
-Pre-FE 与 Post-FE 分别独立训练和评估。每个启用年龄的模型仅有一个共享 FiLM，不会同时启用两种位置；所有训练、验证、测试及待推理患者都必须提供有限的 `age`，范围为 0–120 岁。默认训练示例使用 `none`；进行年龄实验时，在完整训练命令中添加 `--age-position pre` 或 `--age-position post`，并为每个实验选择独立输出目录。
+Pre-FE 与 Post-FE 分别独立训练和评估。每个启用年龄的模型仅有一个共享 FiLM，不会同时启用两种位置；所有训练、验证、测试及推理患者都必须提供有限的 `age`，范围为 0–120 岁。默认训练示例使用 `none`；进行年龄实验时，在完整训练命令中添加 `--age-position pre` 或 `--age-position post`，并为每个实验选择独立输出目录。
 
 ### Loss Function
 
-切片监督使用 Binary Focal Loss，默认 `alpha=0.5`、`gamma=2.0`。训练使用 Adam、基于验证患者 AUC 的 ReduceLROnPlateau 和 EarlyStopping。
+诊断网络逐切片计算 Binary Focal Loss，再在每名患者内部取平均；重标签网络先聚合切片概率，再与患者标签计算 Focal Loss。两者使用 `alpha=0.5`、`gamma=2.0`。
+
+两个训练阶段分别创建 Adam，权重衰减为 `1e-5`，最多训练 300 epochs。ReduceLROnPlateau 以验证 AUC 为依据，factor 为 0.5、patience 为 10、最低学习率为 `1e-7`。验证 AUC 相对最佳保存值增加超过 `1e-4` 时更新 checkpoint；连续 50 epochs 未达到该提升时早停。这些参数由对应运行配置控制，调度器设置由训练代码指定。
+
+重标签阶段以注意力聚合后的患者概率计算验证 AUC；诊断阶段以 PDM 的最大置信度加权窗口评分计算验证 AUC。`--aggregation mean` 消融使用患者切片概率均值。
 
 均值 MIL 消融使用同一基础网络，将切片概率均值转换为患者级预测，再使用真实训练患者标签计算 Focal Loss。
 
@@ -531,19 +535,19 @@ AUC：ROC 曲线下面积；ACC：准确率；SEN：敏感度；SPE：特异度�
 |---|---|
 | 单/双模态 | `--modalities T1w`、`QSM`、`QSM T1w` |
 | 融合位置 | `--fusion decision-level`、`mlp-level`、`concatenation`、`cross-attention` |
-| 重标签轮数 | `--rounds 1` 至 `--rounds 5`，分别独立训练 |
+| 诊断训练总轮数 | `--rounds 1` 至 `--rounds 5`，分别独立训练 |
 | 无 PDM | `--aggregation mean`，均值概率及 0.5 阈值 |
 | 初始标签与迭代更新 | `--rounds 1` 与多轮 `iterative` 配置 |
 | 均值 MIL 监督 | `--supervision traditional-mil --rounds 1` |
 | 年龄位置 | `--age-position pre` 与 `--age-position post` |
 
-融合定义：Decision-level 为各模态经过共享轴向注意力和分类头后的概率平均；MLP-level 为各模态 token 池化后拼接并经 MLP 融合；Concatenation 为 token 特征拼接后线性降维；Cross-Attention 为跨模态注意力融合；双模态时先计算以第一模态为 Q、第二模态为 K/V 的共享交叉注意力结果，分别与两模态残差相加并归一化，再做第二次交叉注意力与残差归一化。多于两个模态时按 `--modalities` 顺序逐个融合。
+融合定义：Decision-level 为各模态经过共享分类头后的概率平均，重标签阶段在分类前加入 Z 轴注意力；MLP-level 为各模态 token 池化后拼接并经 MLP 融合；Concatenation 为 token 特征拼接后线性降维；Cross-Attention 为跨模态注意力融合；双模态时先计算以第一模态为 Q、第二模态为 K/V 的共享交叉注意力结果，分别与两模态残差相加并归一化，再做第二次交叉注意力与残差归一化。多于两个模态时按 `--modalities` 顺序逐个融合。
 
 K=1–5 消融需使用相同真实划分、相同种子配置和不同输出目录，分别独立训练。PDM 主实验额外保存同一最终模型、同一份切片预测的均值聚合指标，便于隔离后处理因素。
 
 ## 🧠 Prediction Interpretability
 
-主流程可导出原始切片概率、双向后验、Shannon 熵、置信度、支持评分、全部窗口分数和最大支持窗口起点，便于追踪患者决策来自哪些连续切片。
+主流程导出原始切片概率、双向后验、Shannon 熵、置信度、窗口置信度总和、窗口评分、有效状态及最高评分窗口的位置，用于追踪患者决策对应的连续切片。
 
 这些输出属于**切片序列层面**的解释。历史 heatmap 脚本将切片概率广播到整张切片，不提供像素级病灶定位；它仅适用于旧切片模型，不能加载新主模型 checkpoint。
 
@@ -555,3 +559,11 @@ K=1–5 消融需使用相同真实划分、相同种子配置和不同输出目
 - [安装配置](pyproject.toml)
 
 
+
+## 图示结构的 checkpoint 格式
+
+checkpoint 保存 `format_version=2`，角色为 `diagnosis` 或 `relabel`。
+`predict` 仅接受诊断 checkpoint。旧的 FE1/FE2 联合轴向网络权重不适用于
+新结构，需要重新训练。`best_round_K.pth` 是诊断权重；
+`best_relabel_for_round_K.pth` 用于生成训练切片伪标签。
+完整主入口是 `poref train --mode poref`；旧模式及旧 heatmap 权重接口保留为兼容用途。

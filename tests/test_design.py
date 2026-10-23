@@ -2,6 +2,7 @@ import itertools
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import numpy as np
@@ -38,8 +39,11 @@ class DesignTests(unittest.TestCase):
         h, c = entropy_confidence([0, 0.5, 1])
         np.testing.assert_allclose(h, [0, 1, 0])
         np.testing.assert_allclose(c, [1, 0, 1])
-        result = decide([0.5] * 96, window_length=5, window_threshold=0)
-        self.assertEqual(result["prediction"], 0)
+        with self.assertRaisesRegex(ValueError, "zero total confidence"):
+            decide([0.5] * 96, window_length=5, window_threshold=0)
+        result = decide([0.8] * 96, window_length=5, window_threshold=0)
+        tied = decide([0.8] * 96, window_length=5, window_threshold=result["score"])
+        self.assertEqual(tied["prediction"], 0)
         self.assertEqual(len(result["window_scores"]), 92)
         for length in (96, 128):
             output = decide([0.99] * length, window_length=4, window_threshold=0.5)
@@ -59,6 +63,33 @@ class DesignTests(unittest.TestCase):
         self.assertAlmostEqual(summarize([result, other], 1)["acc"]["std"], np.std([0.5, 1], ddof=1))
         undefined = evaluate([0, 0], [0.1, 0.2], [0, 0])
         self.assertIsNone(undefined["auc"])
+
+    def test_pdm_uses_continuous_disease_posterior_and_reports_slice_numbers(self):
+        output = decide([0.8, 0.7, 0.1, 0.2], window_length=2, window_threshold=0.5,
+                        transition=[[0.5, 0.5], [0.5, 0.5]], prior=[0.5, 0.5])
+        q = np.asarray(output["posterior"])
+        np.testing.assert_allclose(q, [0.8, 0.7, 0.1, 0.2])
+        h = -(q * np.log2(q) + (1-q) * np.log2(1-q))
+        self.assertNotIn("support", output)
+        expected = np.dot(q[:2], 1-h[:2]) / (1-h[:2]).sum()
+        self.assertAlmostEqual(output["score"], expected)
+        self.assertEqual(output["best_window_slices"], [1, 2])
+        self.assertEqual(output["refined_labels"], [1, 1, 0, 0])
+
+    def test_zero_confidence_windows_are_excluded_and_json_safe(self):
+        with patch("poref.pdm.forward_backward", return_value=np.array([.5, .5, .8, .8])):
+            result = decide([.5]*4, window_length=2, window_threshold=.7)
+        self.assertIsNone(result["window_scores"][0])
+        self.assertEqual(result["valid_windows"], [False, True, True])
+        self.assertAlmostEqual(result["score"], .8)
+        self.assertEqual(result["prediction"], 1)
+        json.dumps(result, allow_nan=False)
+
+    def test_confidence_weighted_average_differs_from_dividing_by_length(self):
+        result = decide([.8, .9], window_length=2, window_threshold=.7,
+                        transition=[[.5, .5], [.5, .5]], prior=[.5, .5])
+        self.assertAlmostEqual(result["score"], .8656309422050593)
+        self.assertEqual(result["prediction"], 1)
 
     def test_manifest_split_and_image_leakage(self):
         Path("work").mkdir(exist_ok=True)

@@ -28,10 +28,10 @@ class DenseFeatureConvBlock(nn.Module):
     DenseNet风格的Feature Convolution模块
 
     输入:
-        [B, 256, 16, 16]
+        [B, channels, 16, 16]
 
     输出:
-        [B, 256, 16, 16]
+        [B, channels + 2 * growth_channels, 16, 16]
     """
 
     def __init__(self, channels=256, growth_channels=128):
@@ -46,31 +46,20 @@ class DenseFeatureConvBlock(nn.Module):
 
         # 3×3卷积：局部特征提取
         self.conv3 = nn.Sequential(
-            nn.Conv2d(growth_channels, growth_channels, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(channels + growth_channels, growth_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(growth_channels),
             nn.ReLU(inplace=True)
         )
 
-        # 拼接后再压缩回256通道
-        self.compress = nn.Sequential(
-            nn.Conv2d(channels + growth_channels, channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(channels),
-            nn.ReLU(inplace=True)
-        )
+        self.output_channels = channels + 2 * growth_channels
 
     def forward(self, x):
         identity = x
 
         out = self.conv1(x)
-        out = self.conv3(out)
-
-        # DenseNet式通道拼接
-        out = torch.cat([identity, out], dim=1)
-
-        # 通道压缩回256
-        out = self.compress(out)
-
-        return out
+        first_concat = torch.cat([identity, out], dim=1)
+        out = self.conv3(first_concat)
+        return torch.cat([first_concat, out], dim=1)
 
 
 class LowerFeatureExtractor(nn.Module):
@@ -117,15 +106,14 @@ class LowerFeatureExtractor(nn.Module):
         )
 
         self.feature_conv2 = DenseFeatureConvBlock(
-            channels=256,
+            channels=self.feature_conv1.output_channels,
             growth_channels=128
         )
 
         # 最后的1×1卷积 + BN
         self.final_conv = nn.Sequential(
-            nn.Conv2d(256, 256, kernel_size=1, bias=False),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(self.feature_conv2.output_channels, 256, kernel_size=1, bias=False),
+            nn.BatchNorm2d(256)
         )
 
     def forward(self, x, token_feat):
@@ -152,7 +140,7 @@ class LowerFeatureExtractor(nn.Module):
 
         # 此时 x: [B, 256, 16, 16]
 
-        # 两个DenseNet风格Feature Convolution
+        # Two dense units: 256 -> 512 -> 768 channels.
         x = self.feature_conv1(x)
         x = self.feature_conv2(x)
 

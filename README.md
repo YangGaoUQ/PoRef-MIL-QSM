@@ -1,8 +1,8 @@
-# PoRef-MIL: Multimodal MRI Classification with Iterative Relabeling and Posterior Decision Modeling
+# PoRef-MIL: QSM Classification with Iterative Relabeling and Posterior Decision Modeling
 
 **English** | [简体中文](README.zh-CN.md)
 
-This repository implements PoRef-MIL for multimodal MRI classification, combining global–local feature extraction, axial self-attention, iterative slice relabeling, and a Posterior Decision Module (PDM). It supports PD/HC and MS/HC experiments.
+This repository implements PoRef-MIL for QSM-based MRI classification with optional multimodal ablations, combining global–local feature extraction, axial self-attention, iterative slice relabeling, and a Posterior Decision Module (PDM). It supports PD/HC and MS/HC experiments.
 
 ## 🔬 Abstract
 
@@ -13,7 +13,7 @@ Main components:
 - **Multimodal MRI**: QSM, T1w, and other preregistered modalities specified by the experiment.
 - **Global–Local Feature Extraction**: four multibranch Transformer/CNN blocks fuse features through cross-attention.
 - **Iterative Relabeling**: slice predictions for training patients are generated across successive training rounds.
-- **Posterior Decision Module**: bidirectional posteriors and local continuous support determine patient-level decisions.
+- **Posterior Decision Module**: bidirectional posteriors and confidence-weighted window averages determine patient-level decisions.
 - **Age-conditioned FiLM**: sin/cos age encoding and an MLP generate scaling and offset parameters to modulate inputs or features before or after feature extraction.
 
 ## 🏆 Results
@@ -26,30 +26,20 @@ PoRef-MIL achieves an AUC of **0.942±0.002** and an ACC of **0.926±0.008** on 
 
 1. **Feature Extraction**: four multibranch blocks per modality combine global attention features and local convolutional features.
 2. **Multimodal Fusion**: cross-modal cross-attention by default, with alternative fusion methods for ablation studies.
-3. **Axial Self-Attention**: models slice context along Z while preserving slice-index correspondence.
+3. **Axial Self-Attention**: models slice context only in the relabeler; the diagnostic test network has no axial module.
 4. **Slice Classification**: an MLP outputs a logit per slice; Sigmoid produces disease probabilities.
-5. **Iterative Relabeling**: round 1 trains FE1; subsequent rounds freeze FE1 and train FE2 using the original slices and supervision from the preceding round.
+5. **Iterative Relabeling**: initialize diagnosis, then alternate a separate bag relabeler with freshly initialized diagnostic networks. Only the trained diagnostic encoder initializes the next relabeler.
 6. **PDM**: a single forward–backward pass, entropy-based confidence, and sliding windows produce patient-level results.
 
 ```text
-Preregistered multimodal MRI
-        │
-        ▼
-Patient-level normalization → Ordered 2D slice sequences
-        │
-        ▼
-Four multibranch extraction blocks per modality → Modality fusion
-        │
-        ▼
-Z-axis self-attention → MLP → Slice disease probabilities
-        │
-        ├── Training: predicted labels → Next-round training supervision (K rounds)
-        │
-        ▼
-Single forward–backward pass → Posterior probabilities → Entropy and confidence
-        │
-        ▼
-Support scores → Sliding windows → Patient classification and ROC-AUC score
+Training: patient labels -> initialize diagnosis
+        -> copy best encoder -> Z attention -> relabeling MLP
+        -> Sigmoid slice probabilities + Softmax weights -> patient Focal Loss
+        -> new training-slice labels -> fresh diagnostic training -> next round
+
+Testing: QSM -> ordered slices -> four FEBs -> max pooling -> MLP
+       -> slice probabilities -> one forward/backward pass -> entropy/confidence
+       -> confidence-weighted window averages -> maximum window score -> patient diagnosis
 ```
 
 ### Key Features
@@ -58,7 +48,7 @@ Support scores → Sliding windows → Patient classification and ROC-AUC score
 - One fixed independent test set; five training/validation folds within the development set; five models evaluated separately.
 - Single-, dual-, and configurable multimodal inputs.
 - Support for 128-slice PD sequences, 96-slice MS sequences, and other explicitly specified lengths.
-- Ablations for K=1–5 relabeling rounds, fusion methods, age-conditioning positions, and PDM.
+- Ablations for K=1–5 total diagnostic training rounds, fusion methods, age-conditioning positions, and PDM.
 - Exported patient lists, models, pseudo-labels, slice probabilities, posteriors, ROC data, and per-fold metrics.
 
 ## 📁 Project Structure
@@ -172,6 +162,8 @@ The protocol is: **reserve one fixed independent test set first, then perform fi
 
 A–E are patient-level partitions of the development set. Each model selects its weights using its validation subset, then evaluates the same T after the final training round. Test patients never participate in training.
 
+The main training entry requires `fixed_holdout` with exactly five development train/validation folds, each evaluated on the same independent test set. Other split protocols are rejected by this entry.
+
 #### 4. Patient Split File
 
 Copy and edit `examples/splits.template.json` with actual patient IDs and paths. The template contains 10 development patients and 2 fixed test patients solely to illustrate the schema; **these are not the actual experimental data or cohort sizes**.
@@ -213,14 +205,14 @@ Requirements:
 
 ### Training
 
-The examples use PowerShell. Replace paths, window length, and threshold with your experiment configuration. `L=5` and `T_w=0.6` are invocation examples, not established optimal paper settings.
+The following PowerShell command trains the QSM model with window length 5 and decision threshold 0.6. Supply the paths and window parameters used for the experiment. Select window parameters using training or validation data; use the test set for final evaluation.
 
 ```powershell
-# Dual-modal PoRef-MIL: fixed test set, five development folds, K=5
+# QSM PoRef-MIL: fixed test set, five development folds, K=5
 python train_val.py `
   --mode poref `
   --data_split_file "D:/splits/pd.json" `
-  --modalities QSM T1w `
+  --modalities QSM `
   --save_dir "D:/results/pd_k5" `
   --batch_size 1 `
   --slice-batch-size 4 `
@@ -253,7 +245,7 @@ The order is **HC, disease**. These options only check test-set counts; they do 
 
 #### Evaluation during Training
 
-After each model completes its final relabeling round, the workflow evaluates its validation subset and the fixed test set. Example output:
+After each model completes its final diagnostic training round, the workflow evaluates its validation subset and the fixed test set. Example output:
 
 ```text
 pd_k5/
@@ -265,6 +257,8 @@ pd_k5/
 │   ├── split.json
 │   ├── best_round_1.pth
 │   ├── best_round_5.pth
+│   ├── best_relabel_for_round_2.pth
+│   ├── best_relabel_for_round_5.pth
 │   ├── pseudo_labels_for_round_2.json
 │   ├── training_log.json
 │   ├── patient_predictions.json
@@ -316,9 +310,9 @@ Input CSVs require `patient_name,true_label,slice_probs`. For each model, the co
 | `--batch_size` | `8` | Patients accumulated per optimization step; the example explicitly uses 1 |
 | `--slice-batch-size` | `4` | Slice batch size inside FE |
 | `--learning_rate` | `0.0001` | First-round learning rate; proportionally scales the default round schedule |
-| `--num_epochs` | `300` | Maximum epochs per round |
-| `--num_folds` | Read from JSON | Optional check against the number of manifest folds |
-| `--rounds` | `5` | K relabeling rounds; choices 1–5 |
+| `--num_epochs` | `300` | Maximum epochs for each diagnostic or relabeling training stage |
+| `--num_folds` | `5` | The main workflow requires a fixed test set and five development train/validation folds |
+| `--rounds` | `5` | K diagnostic training rounds including initialization; K−1 relabeling stages |
 | `--round-lrs` | Default round schedule | Explicit list of exactly K learning rates |
 | `--patience` | `50` | Early-stopping patience based on validation AUC |
 | `--weight-decay` | `0.00001` | Adam weight decay |
@@ -340,7 +334,7 @@ Input CSVs require `patient_name,true_label,slice_probs`. For each model, the co
 | `--device` | `auto` | `auto`, `cpu`, or `cuda` |
 | `--dry-run` | Off | Preview resolved parameters only |
 
-Default PDM transition probabilities and priors are configurable implementation initial values, not established optimal paper settings. Choose window parameters in advance or using training/validation data only.
+Both state self-transition probabilities default to 0.9, and the initial HC probability defaults to 0.5. Command-line arguments configure these values. Window length and decision threshold are required at runtime and are selected using training or validation data.
 
 ## 🔧 Model Architecture Details
 
@@ -349,25 +343,25 @@ Default PDM transition probabilities and priors are configurable implementation 
 Each modality passes through four sequential Extraction Blocks:
 
 - **Upper branch**: linear row tokenization produces 256 tokens of dimension 256, followed by two groups of LayerNorm, self-attention, MLP, and residual connections.
-- **Middle branch**: LayerNorm, reshaping, and a 1×1 convolution produce a `[128,16,16]` feature map.
+- **Middle branch**: a projection branches after the first attention feed-forward block; LayerNorm, reshaping and a 1×1 convolution produce a `[128,16,16]` feature map.
 - **Lower branch**: four groups of 3×3 convolution, BatchNorm, ReLU, and MaxPool; concatenation with the middle branch, followed by DenseFeatureConvBlock processing and channel transformations.
-- **Cross-Attention**: the upper branch supplies Q; the lower branch supplies K/V; output features have shape `[256,256]`.
+- **Cross-Attention**: the upper branch supplies Q and the lower branch K/V. Normalization and multihead cross-attention are followed by a residual connection, LayerNorm, a GELU feed-forward MLP and a second residual connection. Output features have shape `[256,256]`.
 
 The CNN branches in all four blocks receive the original image. Later blocks receive token inputs from the preceding block.
 
 ### 2. Axial Self-Attention
 
-For each corresponding feature-matrix position, Z-axis attention exchanges context across all Z slices. A `1→64` projection maps scalar features to embeddings, followed by 8-head self-attention, residual connections, a `64→128→64` feed-forward network, and projection back to scalars. Input and output shapes are `[1,Z,N,256]`, where N=256 for standard fusion and N=1 for MLP-level fusion. The implementation chunks independent feature positions while preserving the entire Z sequence and uses gradient checkpointing during training to control intermediate activation memory.
+Only in the relabeling network, Z-axis attention exchanges context across all Z slices. A `1→64` projection maps scalar features to embeddings, followed by 8-head self-attention, residual connections, a `64→128→64` feed-forward network, and projection back to scalars. Input and output shapes are `[1,Z,N,256]`, where N=256. The MLP-level ablation repeats each component of its fused vector over the last dimension to preserve this shape. The implementation chunks independent feature positions while preserving the entire Z sequence and uses gradient checkpointing during training to control intermediate activation memory.
 
 ### 3. Slice Classifier
 
-The classification head receives the axial-attention slice features, mean-pools each slice's tokens into a 256-dimensional vector, and applies the following MLP:
+The diagnostic head receives FEB features; the relabeling head receives Z-attention features. Both max-pool each token over its feature dimension (`[Z,256,256] -> [Z,256]`) and use independently learned copies of the same MLP:
 
 ```text
 256 → 512 → 1024 → 512 → 256 → 128 → 2 → 1
 ```
 
-ReLU follows each hidden linear layer. The final layer outputs a logit, converted to a disease probability by Sigmoid. MLP-level fusion has already pooled tokens within each modality, so the classification head receives one token; other fusion methods generally retain 256 tokens.
+ReLU follows each hidden linear layer. The final layer outputs a logit, converted to a disease probability by Sigmoid. The MLP-level ablation repeats each vector component over the last dimension, so max pooling preserves the fused vector.
 
 ### 4. Iterative Relabeling
 
@@ -375,12 +369,12 @@ ReLU follows each hidden linear layer. The final layer outputs a logit, converte
 
 **Figure 1 | Architecture and iterative relabeling.** Four feature-extraction blocks produce slice features. Z-axis attention incorporates slice context to generate predicted labels, which update supervision in subsequent training rounds. [Original PDF](docs/figures/figure-1-framework.pdf).
 
-Figure/code correspondence: the supplied figure labels Max Pooling and a Soft-Max-weighted bag-level loss, whereas the current main implementation uses token mean pooling and slice-level Focal Loss. These two differences remain unresolved.
+1. **Round 1**: initialize slice labels from training-patient labels and train diagnosis (four FEBs -> max pooling -> MLP). Select its checkpoint using patient validation AUC.
+2. **Relabeling for rounds 2–K**: copy the preceding best diagnostic encoder into a separate relabeler, with fresh Z attention and MLP parameters. The encoder remains trainable. The same slice logits feed Sigmoid probabilities and Softmax slice weights. Their dot product is the patient probability used for patient-label Focal Loss. Select the relabeler using attention-aggregated patient validation AUC.
+3. Load the best relabeler and generate labels only for training slices using Sigmoid probabilities (default threshold 0.5).
+4. Initialize an entirely new diagnostic network and train with the new slice labels, averaging slice Focal Loss within each patient. Diagnostic validation uses the configured patient aggregation (PDM by default). Its best encoder initializes the next relabeler. Test inference uses only the final diagnostic network and patient aggregation.
 
-1. **Round 1**: initialize slice supervision from training-patient labels; train FE1, axial attention, and the classifier.
-2. Load the round's best validation model and generate ordered slice pseudo-labels for training patients.
-3. **Round 2**: initialize FE2 by copying trained FE1; freeze FE1 parameters and BatchNorm state.
-4. **Rounds 2–K**: train FE2 on original slices with the preceding round's discrete predictions as loss targets. Labels are not concatenated to images or supplied as extra FE2 input channels. Except in the final round, the best model generates the next round's training labels.
+`--rounds 5` means initialization plus four relabeling/diagnosis cycles. Each stage resets Adam, ReduceLROnPlateau and early stopping. Both stages within a round use that round's learning rate and the same epoch/patience settings. Diagnosis and relabeling have separate training stages and checkpoints.
 
 Validation and test evaluation always use actual patient labels and never enter pseudo-label updates. Slice probabilities are discretized using `>= --relabel-threshold` (default 0.5). With K=5 and `--learning_rate=1e-4`, the initial learning rates are:
 
@@ -388,7 +382,7 @@ Validation and test evaluation always use actual patient labels and never enter 
 [1e-4, 5e-5, 3e-5, 1e-5, 5e-6]
 ```
 
-For K<5, use the first K entries. Changing `--learning_rate` proportionally scales this schedule. `--round-lrs` overrides it with exactly K explicit values. The optimizer and scheduler are recreated each round; the best validation weights are loaded before proceeding to the next round.
+For K<5, use the first K entries. Changing `--learning_rate` proportionally scales this schedule. `--round-lrs` overrides it with exactly K explicit values. The optimizer and scheduler are recreated for each stage; the best validation weights are loaded before proceeding to the next round.
 
 ### 5. Posterior Decision Module
 
@@ -396,23 +390,29 @@ For K<5, use the first K entries. Changing `--learning_rate` proportionally scal
 
 **Figure 2 | Posterior decision workflow.** Ordered slice probabilities enter a two-state HC/disease model. One forward–backward pass produces bidirectional posteriors, which are combined with entropy-based confidence and sliding windows for patient-level classification. State connections show transition relationships; the implementation does not perform optimal-path decoding. [Original PDF](docs/figures/figure-2-pdm.pdf).
 
-Apply **one** forward–backward pass to the original ordered disease probabilities to obtain the slice disease posterior p_i. Then compute:
+Apply **one** forward–backward pass to the ordered slice disease probabilities to obtain disease posteriors q_i.
 
 ```math
-H_i = -p_i\log_2 p_i -(1-p_i)\log_2(1-p_i)
+H_i=-q_i\log_2q_i-(1-q_i)\log_2(1-q_i)
 ```
 
 ```math
-C_i = 1-H_i, \qquad R_i = p_i C_i
+C_i=1-H_i
 ```
 
-For a window of length L:
+For each complete window of length L, confidence weights the posterior average:
 
 ```math
-Q_k = \frac{1}{L}\sum_{i=k}^{k+L-1}R_i, \qquad S = \max_k Q_k
+W_j=\frac{\sum_{i=j}^{j+L-1} C_iq_i}{\sum_{i=j}^{j+L-1} C_i}
 ```
 
-Predict disease when `S > T_w`; otherwise predict HC. S is the continuous patient-level ROC-AUC score. PDM adds no trainable classifier and performs neither Viterbi decoding nor repeated forward–backward passes.
+```math
+S=\max_j W_j
+```
+
+Windows move by one slice without padding. A zero-confidence-sum window has no defined score, is exported as `null`, and is excluded from the maximum. If every window is invalid, prediction raises an explicit error rather than assigning a healthy diagnosis.
+Predict disease when `S > T_w`; otherwise predict HC. S is the patient ROC-AUC score. Validation, testing, predict and standalone postprocessing use the same formula.
+PDM does not weight hard slice labels, add a low-pass filter, decode a Viterbi path or repeat forward–backward passes.
 
 #### Slice-level Visualization
 
@@ -460,16 +460,20 @@ A trainable MLP maps the age embedding to C scaling parameters and C offsets:
 | Configuration | Actual application order | Modulated channels C |
 |---|---|---|
 | `--age-position none` (default) | No age encoding or FiLM | Not applicable |
-| `--age-position pre` | Volume normalization → Sin/cos encoding generates γ and β → Modulate input slices per modality → FE → Modality fusion → Axial attention → Classifier | Number of input modalities M |
-| `--age-position post` | FE → Modality fusion → Modulate features with γ and β generated from sin/cos age encoding → Axial attention → Classifier | Feature dimension 256 |
+| `--age-position pre` | Volume normalization → Sin/cos encoding generates γ and β → Modulate input slices per modality → FE → Modality fusion → Classifier (Z attention precedes the head only in the relabeler) | Number of input modalities M |
+| `--age-position post` | FE → Modality fusion → Modulate features with γ and β generated from sin/cos age encoding → Classifier (Z attention precedes the head only in the relabeler) | Feature dimension 256 |
 
-Pre-FE uses one scale and offset per input modality, broadcast over slice pixels. Post-FE modulates the 256 feature channels and broadcasts across tokens. With decision-level fusion, the same FiLM is applied separately to each modality's features before shared axial attention and classification; probabilities are then averaged.
+Pre-FE uses one scale and offset per input modality, broadcast over slice pixels. Post-FE modulates the 256 feature channels and broadcasts across tokens. With decision-level fusion, the same FiLM is applied separately to each modality's features before classification (with axial attention only in the relabeler); probabilities are then averaged.
 
 Pre-FE and Post-FE are trained and evaluated independently. Each age-conditioned model has only one shared FiLM and does not enable both positions simultaneously. Every training, validation, test, and inference patient must supply a finite `age` in the range 0–120 years. The default training example uses `none`. For age experiments, add `--age-position pre` or `--age-position post` to the full training command and use a separate output directory per experiment.
 
 ### Loss Function
 
-Slice supervision uses Binary Focal Loss with defaults `alpha=0.5` and `gamma=2.0`. Training uses Adam, ReduceLROnPlateau based on validation-patient AUC, and early stopping.
+Diagnosis computes Binary Focal Loss per slice and averages it within each patient. Relabeling aggregates slice probabilities before computing patient-label Focal Loss. Both use `alpha=0.5` and `gamma=2.0`.
+
+Each stage creates its own Adam optimizer, with weight decay `1e-5` and a maximum of 300 epochs. ReduceLROnPlateau monitors validation AUC with factor 0.5, patience 10 and minimum learning rate `1e-7`. A checkpoint is updated when validation AUC exceeds the saved best value by more than `1e-4`; early stopping follows 50 epochs without that improvement. Runtime arguments configure the exposed parameters; scheduler settings are specified in the training code.
+
+Relabeling validation AUC uses the attention-aggregated patient probability. Diagnostic validation AUC uses the maximum confidence-weighted PDM window score. The `--aggregation mean` ablation uses mean slice probability instead.
 
 The mean-MIL ablation uses the same backbone, averages slice probabilities into a patient prediction, and computes Focal Loss against actual training-patient labels.
 
@@ -533,19 +537,19 @@ After running the project, inspect `summary.json` for that run's aggregated metr
 |---|---|
 | Single/dual modality | `--modalities T1w`, `QSM`, `QSM T1w` |
 | Fusion method | `--fusion decision-level`, `mlp-level`, `concatenation`, `cross-attention` |
-| Relabeling rounds | Independently train `--rounds 1` through `--rounds 5` |
+| Total diagnostic training rounds | Independently train `--rounds 1` through `--rounds 5` |
 | Without PDM | `--aggregation mean`, mean probability with threshold 0.5 |
 | Initial labels versus iterative updates | `--rounds 1` versus multiround `iterative` configurations |
 | Mean-MIL supervision | `--supervision traditional-mil --rounds 1` |
 | Age-conditioning position | `--age-position pre` versus `--age-position post` |
 
-Fusion definitions: **Decision-level** averages probabilities after each modality passes through the shared axial attention and classification head. **MLP-level** pools each modality's tokens, concatenates the vectors, and fuses them with an MLP. **Concatenation** concatenates token features and linearly projects them to a lower dimension. **Cross-Attention** fuses modalities through attention: for two modalities, the first supplies Q and the second supplies K/V to a shared cross-attention computation; its result is added residually to each modality and normalized, followed by a second cross-attention computation with residual addition and normalization. For more than two modalities, fusion proceeds sequentially in `--modalities` order.
+Fusion definitions: **Decision-level** averages probabilities after each modality passes through the shared classification head (axial attention is used only by the relabeler). **MLP-level** pools each modality's tokens, concatenates the vectors, and fuses them with an MLP. **Concatenation** concatenates token features and linearly projects them to a lower dimension. **Cross-Attention** fuses modalities through attention: for two modalities, the first supplies Q and the second supplies K/V to a shared cross-attention computation; its result is added residually to each modality and normalized, followed by a second cross-attention computation with residual addition and normalization. For more than two modalities, fusion proceeds sequentially in `--modalities` order.
 
 Train K=1–5 ablations independently with the same actual patient splits and seed configuration, using separate output directories. The main PDM experiment also saves mean-aggregation metrics from the same final model and the same slice predictions to isolate the postprocessing effect.
 
 ## 🧠 Prediction Interpretability
 
-The main workflow exports original slice probabilities, bidirectional posteriors, Shannon entropy, confidence, support scores, all window scores, and the starting index of the maximum-support window. These outputs show which continuous slices contribute to a patient decision.
+The main workflow exports original slice probabilities, bidirectional posteriors, Shannon entropy, confidence, confidence sums, all window scores, validity flags, and the starting index of the highest-scoring window. These outputs show which continuous slices contribute to a patient decision.
 
 Interpretation is at the **slice-sequence level**. The legacy heatmap script broadcasts probabilities over entire slices rather than localizing pixel-level lesions. It only supports the old slice-model architecture and cannot load checkpoints from the new main model.
 
@@ -556,3 +560,12 @@ Interpretation is at the **slice-sequence level**. The legacy heatmap script bro
 - [Dependencies](requirements.txt)
 - [Installation configuration](pyproject.toml)
 - [Chinese README](README.zh-CN.md)
+
+## Figure-aligned checkpoint format
+
+Experiment checkpoints use `format_version=2` and `role=diagnosis` or `role=relabel`.
+`predict` accepts only diagnostic checkpoints. Earlier combined axial/FE1/FE2 checkpoints
+cannot represent this architecture and must be retrained. `best_round_K.pth` is the
+diagnostic checkpoint; `best_relabel_for_round_K.pth` initializes pseudo-label generation.
+The main entry is `poref train --mode poref`; legacy modes and legacy heatmap weights
+are separate compatibility interfaces, not the complete two-stage training workflow.

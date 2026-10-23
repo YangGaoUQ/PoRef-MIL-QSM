@@ -60,6 +60,7 @@ class CommandTests(unittest.TestCase):
             self.train_args("single") + ["--lr", "nan"],
             self.train_args("single") + ["--batch-size", "0"],
             self.train_args("single") + ["--age-csv", "age.csv"],
+            self.train_args("poref") + ["--folds", "3"],
         ]
         for args in cases:
             with self.subTest(args=args), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:

@@ -1,116 +1,39 @@
+"""Figure (c) relabeling for a batch of single-modal patient bags."""
+import copy
 import torch
-import torch.nn as nn
-
+from torch import nn
 from feature_ex.feature import FeatureExtraction
 from relabel.selfAttention import ZAxisSelfAttention
 from classifier.classifier_model import ClassifierMLP
 
 
 class RelabelingNet(nn.Module):
-    """
-    两个Feature_ex的重标签网络
-
-    feature_ex_1:
-        第一轮训练，之后冻结
-
-    feature_ex_2:
-        后续第2~5轮持续更新
-    """
-
-    def __init__(self, threshold=0.5):
+    def __init__(self, threshold=0.5, feature_extractor=None):
         super().__init__()
-
         self.threshold = threshold
-        self.first_frozen = False
-
-        self.feature_ex_1 = FeatureExtraction()
-        self.feature_ex_2 = FeatureExtraction()
-
+        self.feature_extractor = (copy.deepcopy(feature_extractor)
+                                  if feature_extractor is not None else FeatureExtraction())
+        self.feature_extractor.requires_grad_(True)
         self.z_attention = ZAxisSelfAttention()
-
         self.classifier = ClassifierMLP()
 
-    def freeze_first_feature_ex(self):
-        """
-        冻结第一个Feature Extraction
-        """
+    def forward_bag(self, x):
+        if x.ndim != 5 or x.shape[1] == 0:
+            raise ValueError("Expected [patients,slices,1,256,256]")
+        b, z, c, h, w = x.shape
+        features = self.feature_extractor(x.reshape(b * z, c, h, w))
+        features = self.z_attention(features.reshape(b, z, 256, 256))
+        logits = self.classifier(features.reshape(b * z, 256, 256)).reshape(b, z)
+        probabilities = logits.sigmoid()
+        weights = logits.softmax(dim=1)
+        return {"logits": logits, "slice_probs": probabilities,
+                "attention_weights": weights,
+                "bag_probability": (weights * probabilities).sum(dim=1),
+                "pred_labels": (probabilities >= self.threshold).long()}
 
-        self.first_frozen = True
-        self.feature_ex_1.eval()
-        for param in self.feature_ex_1.parameters():
-            param.requires_grad = False
+    def forward(self, x):
+        result = self.forward_bag(x)
+        return result["logits"].unsqueeze(-1), result["pred_labels"]
 
-    def train(self, mode=True):
-        super().train(mode)
-        if self.first_frozen:
-            self.feature_ex_1.eval()
-        return self
-
-    def forward_first_round(self, x):
-        """
-        第一轮前向传播
-
-        输入:
-            x: [B,Z,1,256,256]
-
-        输出:
-            logits: [B,Z,1]
-            pred_labels: [B,Z]
-        """
-
-        B, Z, C, H, W = x.shape
-
-        x_slice = x.reshape(B * Z, C, H, W)
-
-        feat = self.feature_ex_1(x_slice)
-
-        feat = feat.reshape(B, Z, 256, 256)
-
-        feat = self.z_attention(feat)
-
-        feat = feat.reshape(B * Z, 256, 256)
-
-        logits = self.classifier(feat)
-
-        logits = logits.reshape(B, Z, 1)
-
-        probs = torch.sigmoid(logits)
-
-        pred_labels = (probs >= self.threshold).long().squeeze(-1)
-
-        return logits, pred_labels
-
-    def forward_later_round(self, x):
-        """
-        第2~5轮前向传播
-
-        输入:
-            x: [B,Z,1,256,256]
-
-        输出:
-            logits: [B,Z,1]
-            pred_labels: [B,Z]
-        """
-
-        B, Z, C, H, W = x.shape
-
-        x_slice = x.reshape(B * Z, C, H, W)
-
-        # FE2 must consume raw slices, never FE1 token matrices.
-        feat = self.feature_ex_2(x_slice)
-
-        feat = feat.reshape(B, Z, 256, 256)
-
-        feat = self.z_attention(feat)
-
-        feat = feat.reshape(B * Z, 256, 256)
-
-        logits = self.classifier(feat)
-
-        logits = logits.reshape(B, Z, 1)
-
-        probs = torch.sigmoid(logits)
-
-        pred_labels = (probs >= self.threshold).long().squeeze(-1)
-
-        return logits, pred_labels
+    forward_first_round = forward
+    forward_later_round = forward

@@ -43,9 +43,11 @@ class ClassifierMLP(nn.Module):
         x: [B,256,256]
         """
 
-        # 对256个token做平均池化
-        # [B,256,256] → [B,256]
-        x = x.mean(dim=1)
+        # Figure (a): H x W -> H x 1, taking the maximum over W.
+        # Keep one value per token; never pool over the patient's slice axis.
+        if x.ndim != 3 or x.shape[-2:] != (256, 256):
+            raise ValueError("ClassifierMLP expects [slices, 256 tokens, 256 features]")
+        x = x.amax(dim=-1)
 
         # MLP分类
         x = self.mlp(x)

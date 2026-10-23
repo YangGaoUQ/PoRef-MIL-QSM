@@ -1,5 +1,11 @@
-"""One forward/backward pass; no learned parameters or path decoding."""
+"""Figure 2: posterior refinement -> entropy confidence -> window decision.
+
+Each window averages disease posteriors using entropy-derived confidence as
+weights. There is no hard-label weighting, Viterbi or extra low-pass filter.
+"""
 import numpy as np
+
+WINDOW_SCORE_FORMULA = "max_window(sum(confidence * posterior) / sum(confidence))"
 
 
 def probabilities(values):
@@ -54,10 +60,24 @@ def decide(values, *, window_length, window_threshold, transition=None, prior=No
         raise ValueError("window_threshold must be finite and in [0,1]")
     post = forward_backward(p, transition, prior)
     entropy, confidence = entropy_confidence(post)
-    support = post * confidence  # User-confirmed R_i = posterior * (1 - H_i).
-    windows = np.convolve(support, np.ones(window_length) / window_length, mode="valid")
-    score = float(windows.max())
+    kernel = np.ones(window_length)
+    numerator = np.convolve(post * confidence, kernel, mode="valid")
+    weight_sum = np.convolve(confidence, kernel, mode="valid")
+    valid = weight_sum > 0
+    if not valid.any():
+        # The documented weighted average is undefined, not a healthy result.
+        raise ValueError("PDM cannot produce a patient score: all windows have zero total confidence")
+    windows = np.full_like(numerator, np.nan)
+    np.divide(numerator, weight_sum, out=windows, where=valid)
+    start = int(np.nanargmax(windows))
+    score = float(windows[start])
     return {"score": score, "prediction": int(score > window_threshold),
             "posterior": post.tolist(), "entropy": entropy.tolist(),
-            "confidence": confidence.tolist(), "support": support.tolist(),
-            "window_scores": windows.tolist(), "best_window_start": int(windows.argmax())}
+            "confidence": confidence.tolist(),
+            "refined_labels": (post >= 0.5).astype(int).tolist(),
+            # None is JSON-safe and does not masquerade as a zero score.
+            "window_scores": [float(v) if ok else None for v, ok in zip(windows, valid)],
+            "window_confidence_sums": weight_sum.tolist(),
+            "valid_windows": valid.tolist(), "score_formula": WINDOW_SCORE_FORMULA,
+            "best_window_start": start,
+            "best_window_slices": list(range(start + 1, start + window_length + 1))}

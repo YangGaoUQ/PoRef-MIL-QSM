@@ -73,7 +73,8 @@ def build_parser():
     train.add_argument("--dry-run", action="store_true", help="Print resolved parameters without loading data or models")
     train.add_argument("--split-file", "--data_split_file", type=Path)
     train.add_argument("--modalities", nargs="+", default=["QSM"])
-    train.add_argument("--rounds", type=int, choices=range(1, 6), default=5)
+    train.add_argument("--rounds", type=int, choices=range(1, 6), default=5,
+                       help="Diagnostic training rounds, including initialization; K-1 bag relabeling stages")
     train.add_argument("--round-lrs", nargs="+", type=positive_float)
     train.add_argument("--fusion", choices=("cross-attention", "concatenation", "mlp-level", "decision-level"), default="cross-attention")
     train.add_argument("--age-position", choices=("none", "pre", "post"), default="none")
@@ -131,6 +132,9 @@ def resolve_config(parser, args):
         if args.seed < 0 or args.seed >= 2**32:
             parser.error("--seed must be in [0,2**32)")
         if args.mode == "poref":
+            if args.n_splits is not None and args.n_splits != 5:
+                parser.error("--mode poref requires --folds 5 with a fixed holdout test set")
+            config["n_splits"] = 5
             if args.split_file is None:
                 parser.error("--mode poref requires --split-file with patient train/val/test assignments")
             if len(args.modalities) != len(set(args.modalities)):

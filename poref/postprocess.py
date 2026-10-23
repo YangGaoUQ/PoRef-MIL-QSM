@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from poref.metrics import evaluate, summarize
-from poref.pdm import decide
+from poref.pdm import decide, WINDOW_SCORE_FORMULA
 
 
 def main(config):
@@ -46,4 +46,4 @@ def main(config):
             writer = csv.DictWriter(handle, fieldnames=("patient_name", "true_label", "score", "prediction"))
             writer.writeheader()
             writer.writerows({key: r[key] for key in writer.fieldnames} for r in records)
-    (output / "summary.json").write_text(json.dumps({"config": config, "score_formula": "posterior * (1 - binary_entropy_bits)", "metrics": summarize(summaries, config.get("std_ddof", 1))}, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
+    (output / "summary.json").write_text(json.dumps({"config": config, "score_formula": WINDOW_SCORE_FORMULA, "metrics": summarize(summaries, config.get("std_ddof", 1))}, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")

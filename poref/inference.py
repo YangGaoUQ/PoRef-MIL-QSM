@@ -17,9 +17,10 @@ def main(options):
     checkpoint = torch.load(options["model_path"], map_location="cpu", weights_only=True)
     if "config" not in checkpoint or "model" not in checkpoint:
         raise ValueError("predict requires a new PoRef experiment checkpoint, not legacy slice weights")
+    if checkpoint.get("format_version") != 2 or checkpoint.get("role") != "diagnosis":
+        raise ValueError("predict requires a figure-aligned diagnostic checkpoint (format 2); legacy or relabel weights cannot be used")
     config = checkpoint["config"]
     model = PoRefNet(len(config["modalities"]), config["fusion"], config["age_position"], config["axial_chunk_size"], config["slice_batch_size"])
-    model.start_round(checkpoint["round"])
     model.load_state_dict(checkpoint["model"])
     model.to(device).eval()
     source = Path(options["patients_file"]).resolve()

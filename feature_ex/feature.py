@@ -32,10 +32,11 @@ class ExtractionBlock(nn.Module):
     def forward(self, token_input, raw_img):
 
         # 上半部分
-        token_feature = self.upper(token_input)
+        token_feature, projection_tokens = self.upper(token_input, return_projection=True)
 
         # 中间层
-        middle_feature = self.middle(token_feature)
+        # Figure (b) forks the projection path after the FIRST attention block.
+        middle_feature = self.middle(projection_tokens)
 
         # 下半部分始终使用原图
         lower_feature = self.lower(
