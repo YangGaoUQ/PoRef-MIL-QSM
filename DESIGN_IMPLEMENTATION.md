@@ -15,7 +15,7 @@ FEB 投影分支在第一个 attention feed-forward block 后分叉；局部分�
 
 上一最佳诊断模型的 FEB→Z 注意力→独立最大池化及 MLP→逐切片 logits。
 同一 logits 的 Sigmoid 为切片概率，Softmax 为切片权重，点积为患者概率。
-先聚合再计算患者 Focal Loss；α=0.5、γ=2 默认可配置。FEB 不冻结。
+先聚合再计算患者 Focal Loss；α=0.5、γ=2 默认可配置。重标签阶段冻结整套预训练 FEB 的参数及 BatchNorm 统计量，只更新 Z 轴注意力和分类头。各轮新建诊断网络的 FEB 正常训练。
 最佳重标签 checkpoint 仅生成训练患者的新标签；测试从不运行重标签网络。
 
 ## 训练与权重传递

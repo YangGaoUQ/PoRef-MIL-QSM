@@ -98,7 +98,7 @@ PoRef-MIL/
 ### Prerequisites
 
 - Python **3.10 或以上**。
-- PyTorch **2.4 或以上**；GPU 训练需配置与运行环境匹配的 PyTorch/CUDA。
+- PyTorch **2.9.1**；GPU 训练需配置与运行环境匹配的 PyTorch/CUDA。
 - NumPy、NiBabel、SciPy、scikit-learn、pandas、tqdm。
 
 在项目根目录执行：
@@ -369,7 +369,7 @@ Z 轴自注意力仅用于重标签网络，对特征矩阵的每个对应位置
 **图 1｜网络与迭代重标签。** 切片经过四个特征提取块得到分类特征；Z 轴注意力结合切片上下文生成预测标签，再用于后续轮次训练，逐步更新切片监督。[查看原始 PDF](docs/figures/figure-1-framework.pdf)。
 
 1. **Round 1**：训练患者标签初始化切片标签，训练诊断网络（四级 FEB→最大池化→MLP），保存最佳患者级验证 AUC checkpoint。
-2. **Round 2–K 的重标签阶段**：复制上一轮最佳诊断 FEB 至独立重标签网络，重新初始化 Z 轴注意力及分类头。FEB 不冻结。同一组 logits 经 Sigmoid 得到切片概率，经 Softmax 得到切片权重，点积形成患者概率，再计算患者标签的 Focal Loss。用患者级聚合概率的验证 AUC 选重标签 checkpoint。
+2. **Round 2–K 的重标签阶段**：复制上一轮最佳诊断 FEB 至独立重标签网络，重新初始化 Z 轴注意力及分类头。重标签阶段冻结复制的整套预训练 FEB 及其 BatchNorm 统计量，只训练 Z 轴注意力和重标签 MLP；各轮新建诊断网络中的 FEB 正常训练。同一组 logits 经 Sigmoid 得到切片概率，经 Softmax 得到切片权重，点积形成患者概率，再计算患者标签的 Focal Loss。用患者级聚合概率的验证 AUC 选重标签 checkpoint。
 3. 载入最佳重标签 checkpoint，仅为训练患者生成切片标签（Sigmoid 概率≥0.5，阈值可配置）。
 4. 重新初始化整个诊断网络，以新切片标签训练；切片 Focal Loss 在每名患者内部取均值。诊断验证评分使用所选聚合方式（默认 PDM），其最佳 FEB 提供给下一重标签阶段。测试仅使用最终诊断网络及 PDM。
 

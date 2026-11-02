@@ -40,7 +40,7 @@ class ModelTests(unittest.TestCase):
         b.sum().backward()
         torch.testing.assert_close(x.grad, y.grad)
 
-    def test_independent_diagnosis_and_trainable_relabeler_with_fusion(self):
+    def test_independent_diagnosis_and_frozen_relabel_encoder_with_fusion(self):
         from poref.model import PoRefNet, BagRelabelNet
         from feature_ex.film import AgeFiLM
 
@@ -75,7 +75,21 @@ class ModelTests(unittest.TestCase):
                         changed[1:] += 20
                         torch.testing.assert_close(model(inputs, age)[0], model(changed, age)[0])
                         relabeler = BagRelabelNet.from_diagnosis(model, axial_chunk_size=2048)
-                        self.assertTrue(all(p.requires_grad for p in relabeler.encoder.parameters()))
+                        # Keep the narrow ReLU bottleneck active to isolate encoder freezing.
+                        with torch.no_grad():
+                            relabeler.classifier.mlp[-3].bias.fill_(1.0)
+                        self.assertTrue(all(not p.requires_grad for p in relabeler.encoder.parameters()))
+                        self.assertTrue(all(p.requires_grad for p in model.encoder.parameters()))
+                        relabeler.train()
+                        self.assertFalse(relabeler.encoder.training)
+                        self.assertTrue(relabeler.axial.training)
+                        self.assertTrue(relabeler.classifier.training)
+                        encoder_before = {name: value.clone() for name, value in relabeler.encoder.state_dict().items()}
+                        source_before = {name: value.clone() for name, value in model.encoder.state_dict().items()}
+                        optimizer = torch.optim.Adam(
+                            (p for p in relabeler.parameters() if p.requires_grad), lr=1e-3)
+                        axial_before = {name: value.clone() for name, value in relabeler.axial.named_parameters()}
+                        classifier_before = {name: value.clone() for name, value in relabeler.classifier.named_parameters()}
                         self.assertIsNot(relabeler.encoder, model.encoder)
                         for left, right in zip(model.encoder.parameters(), relabeler.encoder.parameters()):
                             torch.testing.assert_close(left, right)
@@ -83,8 +97,66 @@ class ModelTests(unittest.TestCase):
                         result = relabeler.forward_bag(inputs, age)
                         torch.testing.assert_close(result["attention_weights"].sum(), torch.tensor(1.))
                         result["bag_probability"].backward()
-                        self.assertTrue(any(p.grad is not None for p in relabeler.encoder.parameters()))
+                        self.assertTrue(all(p.grad is None for p in relabeler.encoder.parameters()))
+                        self.assertTrue(any(p.grad is not None for p in relabeler.axial.parameters()))
+                        self.assertTrue(any(p.grad is not None for p in relabeler.classifier.parameters()))
+                        optimizer.step()
+                        for name, value in relabeler.encoder.state_dict().items():
+                            torch.testing.assert_close(value, encoder_before[name], rtol=0, atol=0)
+                        for name, value in model.encoder.state_dict().items():
+                            torch.testing.assert_close(value, source_before[name], rtol=0, atol=0)
+                        self.assertTrue(any(not torch.equal(value, axial_before[name])
+                                            for name, value in relabeler.axial.named_parameters()))
+                        self.assertTrue(any(not torch.equal(value, classifier_before[name])
+                                            for name, value in relabeler.classifier.named_parameters()))
+                        relabeler.eval()
+                        relabeler.train()
+                        self.assertFalse(relabeler.encoder.training)
                         self.assertEqual(sum(isinstance(m, AgeFiLM) for m in model.modules()), int(age_position != "none"))
+
+    def test_compatibility_relabeler_freezes_pretrained_features_and_statistics(self):
+        from relabel.relabelingNet import RelabelingNet
+
+        class TinyFE(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.bn = torch.nn.BatchNorm2d(1)
+                self.project = torch.nn.Linear(1, 256)
+
+            def forward(self, x):
+                return self.project(self.bn(x).mean((2, 3))).unsqueeze(1).expand(-1, 256, -1)
+
+        source = TinyFE().train()
+        model = RelabelingNet(feature_extractor=source)
+        model.z_attention = torch.nn.Linear(256, 256)
+        with torch.no_grad():
+            for layer in model.classifier.mlp:
+                if isinstance(layer, torch.nn.Linear):
+                    layer.bias.fill_(1.0)
+        before = {name: value.clone() for name, value in model.feature_extractor.state_dict().items()}
+        source_before = {name: value.clone() for name, value in source.state_dict().items()}
+        head_before = {name: value.clone() for name, value in model.classifier.named_parameters()}
+        attention_before = {name: value.clone() for name, value in model.z_attention.named_parameters()}
+        model.train()
+        self.assertFalse(model.feature_extractor.training)
+        self.assertTrue(model.z_attention.training)
+        self.assertTrue(model.classifier.training)
+        self.assertTrue(all(not p.requires_grad for p in model.feature_extractor.parameters()))
+        optimizer = torch.optim.Adam((p for p in model.parameters() if p.requires_grad), lr=1e-3)
+        result = model.forward_bag(torch.randn(2, 3, 1, 8, 8))
+        result["bag_probability"].sum().backward()
+        self.assertTrue(all(p.grad is None for p in model.feature_extractor.parameters()))
+        optimizer.step()
+        for name, value in model.feature_extractor.state_dict().items():
+            torch.testing.assert_close(value, before[name], rtol=0, atol=0)
+        for name, value in source.state_dict().items():
+            torch.testing.assert_close(value, source_before[name], rtol=0, atol=0)
+        self.assertTrue(any(not torch.equal(value, head_before[name])
+                            for name, value in model.classifier.named_parameters()))
+        self.assertTrue(any(not torch.equal(value, attention_before[name])
+                            for name, value in model.z_attention.named_parameters()))
+        model.eval().train()
+        self.assertFalse(model.feature_extractor.training)
 
     def test_max_pool_axis_and_bag_aggregation_gradients(self):
         from classifier.classifier_model import ClassifierMLP

@@ -99,7 +99,7 @@ The tree lists files relevant to the main workflow. Legacy slice-training script
 ### Prerequisites
 
 - Python **3.10 or later**.
-- PyTorch **2.4 or later**; GPU training requires a compatible PyTorch/CUDA environment.
+- PyTorch **2.9.1**; GPU training requires a compatible PyTorch/CUDA environment.
 - NumPy, NiBabel, SciPy, scikit-learn, pandas, and tqdm.
 
 Run the following in the project root:
@@ -370,7 +370,7 @@ ReLU follows each hidden linear layer. The final layer outputs a logit, converte
 **Figure 1 | Architecture and iterative relabeling.** Four feature-extraction blocks produce slice features. Z-axis attention incorporates slice context to generate predicted labels, which update supervision in subsequent training rounds. [Original PDF](docs/figures/figure-1-framework.pdf).
 
 1. **Round 1**: initialize slice labels from training-patient labels and train diagnosis (four FEBs -> max pooling -> MLP). Select its checkpoint using patient validation AUC.
-2. **Relabeling for rounds 2–K**: copy the preceding best diagnostic encoder into a separate relabeler, with fresh Z attention and MLP parameters. The encoder remains trainable. The same slice logits feed Sigmoid probabilities and Softmax slice weights. Their dot product is the patient probability used for patient-label Focal Loss. Select the relabeler using attention-aggregated patient validation AUC.
+2. **Relabeling for rounds 2–K**: copy the preceding best diagnostic encoder into a separate relabeler, with fresh Z attention and MLP parameters. The copied pretrained encoder is frozen during relabeling, including its BatchNorm statistics; only Z-axis attention and the relabeling MLP are trained. The FEBs in each new diagnostic network remain trainable. The same slice logits feed Sigmoid probabilities and Softmax slice weights. Their dot product is the patient probability used for patient-label Focal Loss. Select the relabeler using attention-aggregated patient validation AUC.
 3. Load the best relabeler and generate labels only for training slices using Sigmoid probabilities (default threshold 0.5).
 4. Initialize an entirely new diagnostic network and train with the new slice labels, averaging slice Focal Loss within each patient. Diagnostic validation uses the configured patient aggregation (PDM by default). Its best encoder initializes the next relabeler. Test inference uses only the final diagnostic network and patient aggregation.
 

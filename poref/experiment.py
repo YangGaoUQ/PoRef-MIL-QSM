@@ -116,7 +116,9 @@ def evaluate_bags(model, ids, samples, config, device):
 def train_stage(model, stage, number, lr, pseudo, fold, samples, config,
                 device, seed, best_path, fold_dir, log):
     # Optimizer, scheduler and early stopping are reset for EVERY stage.
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=config["weight_decay"])
+    optimizer = torch.optim.Adam(
+        (parameter for parameter in model.parameters() if parameter.requires_grad),
+        lr=lr, weight_decay=config["weight_decay"])
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=0.5, patience=10, min_lr=1e-7)
     best_auc, stale = -1.0, 0

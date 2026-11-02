@@ -107,24 +107,36 @@ def bag_outputs(logits):
 
 
 class BagRelabelNet(PoRefNet):
-    """Fresh Z attention/head, initialized from the preceding diagnostic FEB."""
+    """Frozen pretrained diagnostic FEB with fresh, trainable Z attention/head."""
     def __init__(self, modalities=1, fusion="cross-attention", age_position="none",
                  axial_chunk_size=256, slice_batch_size=4):
         super().__init__(modalities, fusion, age_position, axial_chunk_size, slice_batch_size)
         self.axial = ZAxisSelfAttention(chunk_size=axial_chunk_size)
+        self._freeze_encoder()
+
+    def _freeze_encoder(self):
+        self.encoder.requires_grad_(False)
+        self.encoder.eval()
+
+    def train(self, mode=True):
+        super().train(mode)
+        # Freeze BatchNorm statistics and other training-dependent FEB state too.
+        self.encoder.eval()
+        return self
 
     @classmethod
     def from_diagnosis(cls, diagnosis, axial_chunk_size=256):
         model = cls.__new__(cls)
         nn.Module.__init__(model)
         model.encoder = copy.deepcopy(diagnosis.encoder)
-        model.encoder.requires_grad_(True)
+        model.encoder.requires_grad_(False)
         model.age_position = diagnosis.age_position
         model.film = copy.deepcopy(diagnosis.film)
         if model.film is not None:
             model.film.requires_grad_(True)
         model.axial = ZAxisSelfAttention(chunk_size=axial_chunk_size)
         model.classifier = ClassifierMLP()
+        model._freeze_encoder()
         return model
 
     def _classify(self, features, age):

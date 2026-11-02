@@ -21,7 +21,8 @@ def main():
     loss.backward()
     assert torch.isfinite(loss)
     assert all(torch.isfinite(p.grad).all() for p in relabeler.parameters() if p.grad is not None)
-    assert relabeler.encoder.branches[0].block1.upper.block1.self_attn.in_proj_weight.grad is not None
+    assert all(parameter.grad is None for parameter in relabeler.encoder.parameters())
+    assert not relabeler.encoder.training
     assert relabeler.axial.self_attn.in_proj_weight.grad is not None
     assert relabeler.classifier.mlp[0].weight.grad is not None
     diagnosis.eval()

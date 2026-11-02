@@ -1,4 +1,4 @@
-"""Figure (c) relabeling for a batch of single-modal patient bags."""
+"""Figure (c) relabeling with a frozen FEB and trainable attention/head."""
 import copy
 import torch
 from torch import nn
@@ -13,9 +13,16 @@ class RelabelingNet(nn.Module):
         self.threshold = threshold
         self.feature_extractor = (copy.deepcopy(feature_extractor)
                                   if feature_extractor is not None else FeatureExtraction())
-        self.feature_extractor.requires_grad_(True)
+        self.feature_extractor.requires_grad_(False)
+        self.feature_extractor.eval()
         self.z_attention = ZAxisSelfAttention()
         self.classifier = ClassifierMLP()
+
+    def train(self, mode=True):
+        super().train(mode)
+        # Keep the copied pretrained FEB and its BatchNorm statistics frozen.
+        self.feature_extractor.eval()
+        return self
 
     def forward_bag(self, x):
         if x.ndim != 5 or x.shape[1] == 0:

@@ -35,7 +35,9 @@ def forward_backward(values, transition=None, prior=None):
     for i in range(1, len(p)):
         alpha[i] = np.logaddexp.reduce(alpha[i - 1, :, None] + log_a, axis=0) + emit[i]
         alpha[i] -= np.logaddexp.reduce(alpha[i])
-    beta = np.zeros_like(emit)
+    # Equal normalized terminal messages; their common scale cancels in the posterior.
+    beta = np.empty_like(emit)
+    beta[-1] = np.log([0.5, 0.5])
     for i in range(len(p) - 2, -1, -1):
         beta[i] = np.logaddexp.reduce(log_a + emit[i + 1] + beta[i + 1], axis=1)
         beta[i] -= np.logaddexp.reduce(beta[i])
