@@ -135,7 +135,7 @@ class DesignTests(unittest.TestCase):
                 load_manifest(file, ["QSM"])
 
     def test_pd_ms_weighted_accuracy_identity(self):
-        for positives, negatives in ((31, 26), (20, 20)):
+        for positives, negatives in ((31, 26), (20, 10)):
             labels = [1] * positives + [0] * negatives
             predictions = [1] * (positives - 3) + [0] * 3 + [1] * 2 + [0] * (negatives - 2)
             metrics = evaluate(labels, predictions, predictions)

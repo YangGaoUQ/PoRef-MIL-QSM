@@ -161,6 +161,8 @@ python -m poref preprocess --input-dir "D:/MRI/registered" --output "D:/MRI/resa
 
 A–E 是患者级开发集的五份。各模型按验证集选择权重，完成最后一轮训练后分别测试同一个 T。测试患者始终不参与训练。
 
+固定测试集的人数为：PD 数据集包含 26 位 HC 和 31 位 PD；MS 数据集包含 10 位 HC 和 20 位 MS。同一受试者的全部切片归入同一子集，五个模型分别在同一固定测试集上评价。
+
 主训练入口强制使用 `fixed_holdout` 和五个开发集训练／验证折，五个模型分别测试同一固定测试集。其它划分协议在主入口中会被拒绝。
 
 #### 4. Patient Split File
@@ -204,7 +206,7 @@ A–E 是患者级开发集的五份。各模型按验证集选择权重，完�
 
 ### Training
 
-以下 PowerShell 命令训练 QSM 主模型。命令中的窗口长度为 5、判定阈值为 0.6；运行时填写实验使用的路径、窗口长度和阈值。窗口参数使用训练集或验证集选择，测试集用于最终评价。
+以下 PowerShell 命令训练 QSM 主模型。命令中的窗口长度为 10、判定阈值为 0.5；运行时填写实验使用的路径、窗口长度和阈值。窗口参数使用训练集或验证集选择，测试集用于最终评价。
 
 ```powershell
 # QSM PoRef-MIL：固定测试集，开发集五折，K=5
@@ -219,8 +221,8 @@ python train_val.py `
   --num_epochs 300 `
   --num_folds 5 `
   --rounds 5 `
-  --window-length 5 `
-  --window-threshold 0.6 `
+  --window-length 10 `
+  --window-threshold 0.5 `
   --expected-slices 128 `
   --seed 2025 `
   --std-ddof 1 `
@@ -235,7 +237,7 @@ python train_val.py `
 
 ```text
 PD: --expected-test-counts 26 31
-MS: --expected-test-counts 20 20
+MS: --expected-test-counts 10 20
 ```
 
 参数顺序为 **HC、疾病类**；这只是核对测试集人数，不代表完整数据规模，也不会生成或更改患者划分。
@@ -291,8 +293,8 @@ python -m poref postprocess `
   --input-dir "D:/results/slice_predictions" `
   --output "D:/results/pdm" `
   --folds 5 `
-  --window-length 5 `
-  --window-threshold 0.6 `
+  --window-length 10 `
+  --window-threshold 0.5 `
   --std-ddof 1
 ```
 
@@ -326,7 +328,7 @@ python -m poref postprocess `
 | `--stay-hc` / `--stay-disease` | `0.9` / `0.9` | PDM 状态自保持概率 |
 | `--prior-hc` | `0.5` | PDM 初始 HC 概率 |
 | `--expected-slices` | 不限制 | 核对序列长度，如 128 或 96 |
-| `--expected-test-counts` | 不限制 | 核对每个模型的 HC、疾病测试人数 |
+| `--expected-test-counts` | PD：`26 31`；MS：`10 20` | 按 `--disease-name` 选择默认值，逐折核对 HC、疾病测试人数 |
 | `--disease-name` | `PD` | 实验记录使用 `PD` 或 `MS` |
 | `--seed` | `2025` | 第一个模型的随机种子，后续模型依次加 1 |
 | `--std-ddof` | `1` | 样本标准差；可显式选择 0 |

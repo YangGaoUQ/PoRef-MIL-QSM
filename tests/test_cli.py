@@ -67,6 +67,14 @@ class CommandTests(unittest.TestCase):
                 main(args)
             self.assertEqual(raised.exception.code, 2)
 
+    def test_paper_test_counts_follow_dataset_and_allow_explicit_override(self):
+        for extra, expected in [([], [26, 31]), (["--disease-name", "MS"], [10, 20]),
+                                (["--disease-name", "MS", "--expected-test-counts", "1", "1"], [1, 1])]:
+            entry = Mock()
+            with patch("poref.cli.importlib.import_module", return_value=SimpleNamespace(main=entry)):
+                main(self.train_args("poref") + extra)
+            self.assertEqual(entry.call_args.args[0]["expected_test_counts"], expected)
+
     def test_postprocess_dispatch(self):
         entry = Mock()
         with patch("poref.cli.importlib.import_module", return_value=SimpleNamespace(main=entry)) as load:

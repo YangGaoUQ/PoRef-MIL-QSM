@@ -135,6 +135,7 @@ def resolve_config(parser, args):
             if args.n_splits is not None and args.n_splits != 5:
                 parser.error("--mode poref requires --folds 5 with a fixed holdout test set")
             config["n_splits"] = 5
+            config["expected_test_counts"] = args.expected_test_counts or ([26, 31] if args.disease_name == "PD" else [10, 20])
             if args.split_file is None:
                 parser.error("--mode poref requires --split-file with patient train/val/test assignments")
             if len(args.modalities) != len(set(args.modalities)):

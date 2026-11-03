@@ -162,6 +162,8 @@ The protocol is: **reserve one fixed independent test set first, then perform fi
 
 A–E are patient-level partitions of the development set. Each model selects its weights using its validation subset, then evaluates the same T after the final training round. Test patients never participate in training.
 
+The fixed test set contains 26 HC and 31 PD participants for PD, and 10 HC and 20 MS participants for MS. All slices from one participant remain in the same subset. Each of the five models is evaluated individually on that same fixed test set.
+
 The main training entry requires `fixed_holdout` with exactly five development train/validation folds, each evaluated on the same independent test set. Other split protocols are rejected by this entry.
 
 #### 4. Patient Split File
@@ -205,7 +207,7 @@ Requirements:
 
 ### Training
 
-The following PowerShell command trains the QSM model with window length 5 and decision threshold 0.6. Supply the paths and window parameters used for the experiment. Select window parameters using training or validation data; use the test set for final evaluation.
+The following PowerShell command trains the QSM model with window length 10 and decision threshold 0.5. Supply the paths and window parameters used for the experiment. Select window parameters using training or validation data; use the test set for final evaluation.
 
 ```powershell
 # QSM PoRef-MIL: fixed test set, five development folds, K=5
@@ -220,8 +222,8 @@ python train_val.py `
   --num_epochs 300 `
   --num_folds 5 `
   --rounds 5 `
-  --window-length 5 `
-  --window-threshold 0.6 `
+  --window-length 10 `
+  --window-threshold 0.5 `
   --expected-slices 128 `
   --seed 2025 `
   --std-ddof 1 `
@@ -236,7 +238,7 @@ To check the expected fixed test-set class counts, optionally add:
 
 ```text
 PD: --expected-test-counts 26 31
-MS: --expected-test-counts 20 20
+MS: --expected-test-counts 10 20
 ```
 
 The order is **HC, disease**. These options only check test-set counts; they do not describe the full cohort or create/change patient assignments.
@@ -292,8 +294,8 @@ python -m poref postprocess `
   --input-dir "D:/results/slice_predictions" `
   --output "D:/results/pdm" `
   --folds 5 `
-  --window-length 5 `
-  --window-threshold 0.6 `
+  --window-length 10 `
+  --window-threshold 0.5 `
   --std-ddof 1
 ```
 
@@ -327,7 +329,7 @@ Input CSVs require `patient_name,true_label,slice_probs`. For each model, the co
 | `--stay-hc` / `--stay-disease` | `0.9` / `0.9` | State self-transition probabilities |
 | `--prior-hc` | `0.5` | Initial HC probability for PDM |
 | `--expected-slices` | Unrestricted | Check sequence length, e.g. 128 or 96 |
-| `--expected-test-counts` | Unrestricted | Check HC and disease test counts for each model |
+| `--expected-test-counts` | PD: `26 31`; MS: `10 20` | Expected HC and disease test counts, selected by `--disease-name`; checked for each fold |
 | `--disease-name` | `PD` | Record `PD` or `MS` in the experiment configuration |
 | `--seed` | `2025` | Seed for the first model; incremented by 1 for each subsequent model |
 | `--std-ddof` | `1` | Sample standard deviation; explicitly select 0 for population standard deviation |

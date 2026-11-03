@@ -227,7 +227,7 @@ class ModelTests(unittest.TestCase):
             split_file = root / "splits.json"
             split_file.write_text(json.dumps(manifest), encoding="utf-8")
             parser = build_parser()
-            args = parser.parse_args(["train", "--mode", "poref", "--split-file", str(split_file), "--output", str(root / "run"), "--epochs", "1", "--rounds", "2", "--window-length", "2", "--window-threshold", "0.5", "--device", "cpu"])
+            args = parser.parse_args(["train", "--mode", "poref", "--split-file", str(split_file), "--output", str(root / "run"), "--epochs", "1", "--rounds", "2", "--window-length", "2", "--window-threshold", "0.5", "--expected-test-counts", "1", "1", "--device", "cpu"])
             config = resolve_config(parser, args)
             with patch("poref.experiment.PoRefNet", TinyPatientModel), patch("poref.experiment.BagRelabelNet", TinyBagModel), patch("poref.experiment.load_patient", synthetic_input):
                 main(config)
