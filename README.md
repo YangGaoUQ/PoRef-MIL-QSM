@@ -323,9 +323,9 @@ Input CSVs require `patient_name,true_label,slice_probs`. For each model, the co
 | `--fusion` | `cross-attention` | Fusion method |
 | `--age-position` | `none` | `none`, `pre`, or `post` |
 | `--supervision` | `iterative` | Iterative supervision or `traditional-mil` mean-supervision ablation |
-| `--aggregation` | `pdm` | Patient-level PDM or `mean` aggregation |
-| `--window-length` | Required for PDM | Sliding-window length L; cannot exceed the slice count |
-| `--window-threshold` | Required for PDM | Patient decision threshold T_w |
+| `--aggregation` | `pdm` | Patient-level PDM or `sliding-window-mean` aggregation (`mean` is a compatibility alias) |
+| `--window-length` | Required for both aggregation modes | Sliding-window length L; cannot exceed the slice count |
+| `--window-threshold` | Required for both aggregation modes | Patient decision threshold T_w |
 | `--stay-hc` / `--stay-disease` | `0.9` / `0.9` | State self-transition probabilities |
 | `--prior-hc` | `0.5` | Initial HC probability for PDM |
 | `--expected-slices` | Unrestricted | Check sequence length, e.g. 128 or 96 |
@@ -475,7 +475,7 @@ Diagnosis computes Binary Focal Loss per slice and averages it within each patie
 
 Each stage creates its own Adam optimizer, with weight decay `1e-5` and a maximum of 300 epochs. ReduceLROnPlateau monitors validation AUC with factor 0.5, patience 10 and minimum learning rate `1e-7`. A checkpoint is updated when validation AUC exceeds the saved best value by more than `1e-4`; early stopping follows 50 epochs without that improvement. Runtime arguments configure the exposed parameters; scheduler settings are specified in the training code.
 
-Relabeling validation AUC uses the attention-aggregated patient probability. Diagnostic validation AUC uses the maximum confidence-weighted PDM window score. The `--aggregation mean` ablation uses mean slice probability instead.
+Relabeling validation AUC uses the attention-aggregated patient probability. Diagnostic validation AUC uses the maximum confidence-weighted PDM window score. The `--aggregation sliding-window-mean` ablation uses raw slice probabilities in stride-1 windows of the same length L as PDM. Each window score is the arithmetic mean of its probabilities; the patient score is the maximum window mean. A patient is classified as diseased if any window mean strictly exceeds the same window threshold used by PDM (0.5 in the examples). ROC/AUC uses the maximum window mean as a continuous score. No posterior refinement or confidence weighting is applied.
 
 The mean-MIL ablation uses the same backbone, averages slice probabilities into a patient prediction, and computes Focal Loss against actual training-patient labels.
 
@@ -540,14 +540,14 @@ After running the project, inspect `summary.json` for that run's aggregated metr
 | Single/dual modality | `--modalities T1w`, `QSM`, `QSM T1w` |
 | Fusion method | `--fusion decision-level`, `mlp-level`, `concatenation`, `cross-attention` |
 | Total diagnostic training rounds | Independently train `--rounds 1` through `--rounds 5` |
-| Without PDM | `--aggregation mean`, mean probability with threshold 0.5 |
+| Without PDM | `--aggregation sliding-window-mean --window-length 10 --window-threshold 0.5`, any window mean > 0.5 |
 | Initial labels versus iterative updates | `--rounds 1` versus multiround `iterative` configurations |
 | Mean-MIL supervision | `--supervision traditional-mil --rounds 1` |
 | Age-conditioning position | `--age-position pre` versus `--age-position post` |
 
 Fusion definitions: **Decision-level** averages probabilities after each modality passes through the shared classification head (axial attention is used only by the relabeler). **MLP-level** pools each modality's tokens, concatenates the vectors, and fuses them with an MLP. **Concatenation** concatenates token features and linearly projects them to a lower dimension. **Cross-Attention** fuses modalities through attention: for two modalities, the first supplies Q and the second supplies K/V to a shared cross-attention computation; its result is added residually to each modality and normalized, followed by a second cross-attention computation with residual addition and normalization. For more than two modalities, fusion proceeds sequentially in `--modalities` order.
 
-Train K=1–5 ablations independently with the same actual patient splits and seed configuration, using separate output directories. The main PDM experiment also saves mean-aggregation metrics from the same final model and the same slice predictions to isolate the postprocessing effect.
+Train K=1–5 ablations independently with the same actual patient splits and seed configuration, using separate output directories. The main PDM experiment also saves sliding-window-mean metrics from the same final model and the same slice predictions to isolate the postprocessing effect.
 
 ## 🧠 Prediction Interpretability
 

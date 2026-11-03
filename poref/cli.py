@@ -79,7 +79,8 @@ def build_parser():
     train.add_argument("--fusion", choices=("cross-attention", "concatenation", "mlp-level", "decision-level"), default="cross-attention")
     train.add_argument("--age-position", choices=("none", "pre", "post"), default="none")
     train.add_argument("--supervision", choices=("iterative", "traditional-mil"), default="iterative")
-    train.add_argument("--aggregation", choices=("pdm", "mean"), default="pdm")
+    train.add_argument("--aggregation", choices=("pdm", "sliding-window-mean", "mean"), default="pdm",
+                       help="PDM or maximum raw-probability window mean; mean is a compatibility alias")
     train.add_argument("--seed", type=int, default=2025)
     train.add_argument("--alpha", type=unit_float, default=0.5)
     train.add_argument("--gamma", type=nonnegative_float, default=2.0)
@@ -142,8 +143,10 @@ def resolve_config(parser, args):
                 parser.error("--modalities must be unique ordered names")
             if args.supervision == "traditional-mil" and args.rounds != 1:
                 parser.error("traditional-mil requires --rounds 1")
-            if args.aggregation == "pdm" and (args.window_length is None or args.window_threshold is None):
-                parser.error("PDM requires explicit --window-length and --window-threshold")
+            if args.window_length is None or args.window_threshold is None:
+                parser.error("Patient aggregation requires explicit --window-length and --window-threshold")
+            if args.aggregation == "mean":
+                config["aggregation"] = "sliding-window-mean"
             if args.round_lrs is not None and len(args.round_lrs) != args.rounds:
                 parser.error("--round-lrs must contain exactly --rounds rates")
             config["round_lrs"] = args.round_lrs or [rate * args.lr / 1e-4 for rate in [1e-4, 5e-5, 3e-5, 1e-5, 5e-6][:args.rounds]]

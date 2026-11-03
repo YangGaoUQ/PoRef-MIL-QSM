@@ -4,6 +4,7 @@ from pathlib import Path
 
 import torch
 
+from poref.aggregation import sliding_window_mean
 from poref.data import load_patient
 from poref.model import PoRefNet
 from poref.pdm import decide
@@ -50,8 +51,8 @@ def main(options):
                                 transition=[[config["stay_hc"], 1 - config["stay_hc"]], [1 - config["stay_disease"], config["stay_disease"]]],
                                 prior=[config["prior_hc"], 1 - config["prior_hc"]])
             else:
-                score = sum(probabilities) / len(probabilities)
-                result = {"score": score, "prediction": int(score >= 0.5)}
+                result = sliding_window_mean(probabilities, window_length=config["window_length"],
+                                             window_threshold=config["window_threshold"])
             records.append({"patient_name": row["patient_id"], "slice_probs": probabilities, **result})
     output.mkdir(parents=True, exist_ok=True)
     (output / "predictions.json").write_text(json.dumps({"checkpoint": str(Path(options["model_path"]).resolve()), "model_config": config, "patients": records}, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")

@@ -322,9 +322,9 @@ python -m poref postprocess `
 | `--fusion` | `cross-attention` | 融合方式 |
 | `--age-position` | `none` | `none`、`pre` 或 `post` |
 | `--supervision` | `iterative` | 迭代监督或 `traditional-mil` 均值监督消融 |
-| `--aggregation` | `pdm` | 患者级 PDM 或 `mean` 聚合 |
-| `--window-length` | PDM 必填 | 滑动窗口 L，不能超过切片数 |
-| `--window-threshold` | PDM 必填 | 患者决策阈值 T_w |
+| `--aggregation` | `pdm` | 患者级 PDM 或 `sliding-window-mean` 滑动窗口均值聚合（`mean` 为兼容别名） |
+| `--window-length` | 两种聚合均必填 | 滑动窗口 L，不能超过切片数 |
+| `--window-threshold` | 两种聚合均必填 | 患者决策阈值 T_w |
 | `--stay-hc` / `--stay-disease` | `0.9` / `0.9` | PDM 状态自保持概率 |
 | `--prior-hc` | `0.5` | PDM 初始 HC 概率 |
 | `--expected-slices` | 不限制 | 核对序列长度，如 128 或 96 |
@@ -373,7 +373,7 @@ Z 轴自注意力仅用于重标签网络，对特征矩阵的每个对应位置
 1. **Round 1**：训练患者标签初始化切片标签，训练诊断网络（四级 FEB→最大池化→MLP），保存最佳患者级验证 AUC checkpoint。
 2. **Round 2–K 的重标签阶段**：复制上一轮最佳诊断 FEB 至独立重标签网络，重新初始化 Z 轴注意力及分类头。重标签阶段冻结复制的整套预训练 FEB 及其 BatchNorm 统计量，只训练 Z 轴注意力和重标签 MLP；各轮新建诊断网络中的 FEB 正常训练。同一组 logits 经 Sigmoid 得到切片概率，经 Softmax 得到切片权重，点积形成患者概率，再计算患者标签的 Focal Loss。用患者级聚合概率的验证 AUC 选重标签 checkpoint。
 3. 载入最佳重标签 checkpoint，仅为训练患者生成切片标签（Sigmoid 概率≥0.5，阈值可配置）。
-4. 重新初始化整个诊断网络，以新切片标签训练；切片 Focal Loss 在每名患者内部取均值。诊断验证评分使用所选聚合方式（默认 PDM），其最佳 FEB 提供给下一重标签阶段。测试仅使用最终诊断网络及 PDM。
+4. 重新初始化整个诊断网络，以新切片标签训练；切片 Focal Loss 在每名患者内部取均值。诊断验证评分使用所选聚合方式（默认 PDM），其最佳 FEB 提供给下一重标签阶段。测试仅使用最终诊断网络及所选患者聚合方式。
 
 `--rounds 5` 表示一次初始化加四次重标签／诊断训练。每阶段独立创建 Adam、ReduceLROnPlateau 和早停状态。每轮重标签阶段与该轮诊断阶段使用相同的学习率、最大 epochs 和早停规则。诊断网络与重标签网络分别训练并保存 checkpoint。
 
@@ -474,7 +474,7 @@ Pre-FE 与 Post-FE 分别独立训练和评估。每个启用年龄的模型仅�
 
 两个训练阶段分别创建 Adam，权重衰减为 `1e-5`，最多训练 300 epochs。ReduceLROnPlateau 以验证 AUC 为依据，factor 为 0.5、patience 为 10、最低学习率为 `1e-7`。验证 AUC 相对最佳保存值增加超过 `1e-4` 时更新 checkpoint；连续 50 epochs 未达到该提升时早停。这些参数由对应运行配置控制，调度器设置由训练代码指定。
 
-重标签阶段以注意力聚合后的患者概率计算验证 AUC；诊断阶段以 PDM 的最大置信度加权窗口评分计算验证 AUC。`--aggregation mean` 消融使用患者切片概率均值。
+重标签阶段以注意力聚合后的患者概率计算验证 AUC；诊断阶段以 PDM 的最大置信度加权窗口评分计算验证 AUC。`--aggregation sliding-window-mean` 消融使用原始切片概率，采用与 PDM 相同的窗口长度 L 和窗口阈值，沿切片顺序以步长 1 滑动。每个窗口取切片概率的算术均值；只要任一窗口均值严格大于阈值（示例为 0.5），患者即判为疾病，否则判为 HC。患者连续评分为所有窗口均值的最大值，用于 ROC/AUC；不进行后验优化或置信度加权。
 
 均值 MIL 消融使用同一基础网络，将切片概率均值转换为患者级预测，再使用真实训练患者标签计算 Focal Loss。
 
@@ -538,14 +538,14 @@ AUC：ROC 曲线下面积；ACC：准确率；SEN：敏感度；SPE：特异度�
 | 单/双模态 | `--modalities T1w`、`QSM`、`QSM T1w` |
 | 融合位置 | `--fusion decision-level`、`mlp-level`、`concatenation`、`cross-attention` |
 | 诊断训练总轮数 | `--rounds 1` 至 `--rounds 5`，分别独立训练 |
-| 无 PDM | `--aggregation mean`，均值概率及 0.5 阈值 |
+| 无 PDM | `--aggregation sliding-window-mean --window-length 10 --window-threshold 0.5`，任一窗口均值 > 0.5 即判为疾病 |
 | 初始标签与迭代更新 | `--rounds 1` 与多轮 `iterative` 配置 |
 | 均值 MIL 监督 | `--supervision traditional-mil --rounds 1` |
 | 年龄位置 | `--age-position pre` 与 `--age-position post` |
 
 融合定义：Decision-level 为各模态经过共享分类头后的概率平均，重标签阶段在分类前加入 Z 轴注意力；MLP-level 为各模态 token 池化后拼接并经 MLP 融合；Concatenation 为 token 特征拼接后线性降维；Cross-Attention 为跨模态注意力融合；双模态时先计算以第一模态为 Q、第二模态为 K/V 的共享交叉注意力结果，分别与两模态残差相加并归一化，再做第二次交叉注意力与残差归一化。多于两个模态时按 `--modalities` 顺序逐个融合。
 
-K=1–5 消融需使用相同真实划分、相同种子配置和不同输出目录，分别独立训练。PDM 主实验额外保存同一最终模型、同一份切片预测的均值聚合指标，便于隔离后处理因素。
+K=1–5 消融需使用相同真实划分、相同种子配置和不同输出目录，分别独立训练。PDM 主实验额外保存同一最终模型、同一份切片预测的滑动窗口均值聚合指标，便于隔离后处理因素。
 
 ## 🧠 Prediction Interpretability
 

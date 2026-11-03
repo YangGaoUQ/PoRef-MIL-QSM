@@ -75,6 +75,22 @@ class CommandTests(unittest.TestCase):
                 main(self.train_args("poref") + extra)
             self.assertEqual(entry.call_args.args[0]["expected_test_counts"], expected)
 
+    def test_window_mean_alias_and_required_parameters(self):
+        for name in ("mean", "sliding-window-mean"):
+            entry = Mock()
+            with patch("poref.cli.importlib.import_module", return_value=SimpleNamespace(main=entry)):
+                main(self.train_args("poref") + ["--aggregation", name])
+            config = entry.call_args.args[0]
+            self.assertEqual(config["aggregation"], "sliding-window-mean")
+            self.assertEqual(config["window_length"], 3)
+            self.assertEqual(config["window_threshold"], 0.5)
+            for flag in ("--window-length", "--window-threshold"):
+                args = self.train_args("poref") + ["--aggregation", name]
+                index = args.index(flag)
+                del args[index:index + 2]
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    main(args)
+
     def test_postprocess_dispatch(self):
         entry = Mock()
         with patch("poref.cli.importlib.import_module", return_value=SimpleNamespace(main=entry)) as load:

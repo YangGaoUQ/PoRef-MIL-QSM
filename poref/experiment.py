@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
+from poref.aggregation import sliding_window_mean, WINDOW_MEAN_FORMULA
 from poref.data import load_manifest, load_patient
 from poref.metrics import evaluate, summarize
 from poref.model import PoRefNet, BagRelabelNet
@@ -73,25 +74,27 @@ def evaluate_patients(model, ids, samples, config, device):
             row = samples[pid]
             images, age = patient_input(row, config, device)
             probs = model(images, age).sigmoid().cpu().numpy()
-            mean_score = float(probs.mean())
+            window_mean = sliding_window_mean(probs, window_length=config["window_length"],
+                                              window_threshold=config["window_threshold"])
             result = {"patient_name": pid, "true_label": row["label"], "slice_probs": probs.tolist(),
-                      "z_indices": list(range(len(probs))), "mean_score": mean_score, "mean_prediction": int(mean_score >= 0.5)}
+                      "z_indices": list(range(len(probs))), "window_mean_score": window_mean["score"], "window_mean_prediction": window_mean["prediction"],
+                      "window_mean": window_mean}
             if config["aggregation"] == "pdm":
                 pdm = decide(probs, window_length=config["window_length"], window_threshold=config["window_threshold"],
                              transition=[[config["stay_hc"], 1 - config["stay_hc"]], [1 - config["stay_disease"], config["stay_disease"]]],
                              prior=[config["prior_hc"], 1 - config["prior_hc"]])
                 result.update({"pdm": pdm, "score": pdm["score"], "prediction": pdm["prediction"]})
             else:
-                result.update(score=mean_score, prediction=result["mean_prediction"])
+                result.update(window_mean)
             rows.append(result)
     metrics = evaluate([r["true_label"] for r in rows], [r["score"] for r in rows], [r["prediction"] for r in rows])
-    mean_metrics = evaluate([r["true_label"] for r in rows], [r["mean_score"] for r in rows], [r["mean_prediction"] for r in rows])
+    mean_metrics = evaluate([r["true_label"] for r in rows], [r["window_mean_score"] for r in rows], [r["window_mean_prediction"] for r in rows])
     return rows, metrics, mean_metrics
 
 
 def save_predictions(path, rows):
     with Path(path).open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=("patient_name", "true_label", "score", "prediction", "mean_score", "mean_prediction", "slice_probs", "z_indices"))
+        writer = csv.DictWriter(handle, fieldnames=("patient_name", "true_label", "score", "prediction", "window_mean_score", "window_mean_prediction", "slice_probs", "z_indices"))
         writer.writeheader()
         for row in rows:
             record = {key: row[key] for key in writer.fieldnames}
@@ -182,7 +185,7 @@ def main(config):
     if config.get("n_splits") is not None and config["n_splits"] != len(doc["folds"]):
         raise ValueError("--folds does not match the explicit manifest fold count")
     config = {**config, "n_splits": len(doc["folds"]),
-              "score_formula": WINDOW_SCORE_FORMULA if config["aggregation"] == "pdm" else "mean(slice_probabilities)"}
+              "score_formula": WINDOW_SCORE_FORMULA if config["aggregation"] == "pdm" else WINDOW_MEAN_FORMULA}
     if config["seed"] + len(doc["folds"]) - 1 >= 2**32:
         raise ValueError("Fold seeds exceed the NumPy seed range")
     for fold in doc["folds"]:
@@ -201,7 +204,7 @@ def main(config):
         raise ValueError("CUDA requested but unavailable")
     device = torch.device(device_name)
     output.mkdir(parents=True, exist_ok=True)
-    write_json(output / "config.json", {**config, "resolved_device": device_name, "torch_version": torch.__version__, "score_formula": WINDOW_SCORE_FORMULA if config["aggregation"] == "pdm" else "mean(slice_probabilities)", "status": "started"})
+    write_json(output / "config.json", {**config, "resolved_device": device_name, "torch_version": torch.__version__, "score_formula": WINDOW_SCORE_FORMULA if config["aggregation"] == "pdm" else WINDOW_MEAN_FORMULA, "status": "started"})
     write_json(output / "resolved_splits.json", doc)
     metrics_all, mean_all = [], []
     for fold_index, fold in enumerate(doc["folds"], 1):
@@ -248,4 +251,4 @@ def main(config):
                "independent_test_cohorts": 1 if doc["test_design"] == "fixed_holdout" else len(metrics_all),
                "ensemble_predictions": False,
                "test": summarize(metrics_all, config["std_ddof"]),
-               "same_model_mean_aggregation": summarize(mean_all, config["std_ddof"]), "status": "complete"})
+               "same_model_window_mean_aggregation": summarize(mean_all, config["std_ddof"]), "status": "complete"})

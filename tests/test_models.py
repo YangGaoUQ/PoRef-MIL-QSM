@@ -269,6 +269,21 @@ class ModelTests(unittest.TestCase):
             self.assertEqual([p["score"] for p in original], [p["score"] for p in predicted])
             self.assertTrue(all(p["score_formula"] == WINDOW_SCORE_FORMULA for p in predicted))
 
+    def test_without_pdm_evaluation_uses_local_window_score(self):
+        from poref.experiment import evaluate_patients
+        class SliceModel(torch.nn.Module):
+            def forward(self, images, age=None):
+                return torch.logit(images)
+        config = {"aggregation": "sliding-window-mean", "window_length": 10,
+                  "window_threshold": 0.5}
+        p = torch.tensor([0.1] * 20 + [0.8] * 10 + [0.1] * 98)
+        with patch("poref.experiment.patient_input", return_value=(p, None)):
+            rows, metrics, paired = evaluate_patients(SliceModel(), ["p"], {"p": {"label": 1}}, config, "cpu")
+        self.assertEqual(rows[0]["prediction"], 1)
+        self.assertAlmostEqual(rows[0]["score"], 0.8, places=6)
+        self.assertEqual(rows[0]["best_window_slices"], list(range(21, 31)))
+        self.assertEqual(metrics, paired)
+
     def test_main_rejects_other_fold_protocols_before_loading_images(self):
         from poref.experiment import main
         options = {"split_file": "unused.json", "modalities": ["QSM"], "age_position": "none"}
