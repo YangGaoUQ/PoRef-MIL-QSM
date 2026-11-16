@@ -7,7 +7,7 @@ import torch
 from poref.aggregation import sliding_window_mean
 from poref.data import load_patient
 from poref.model import PoRefNet
-from poref.pdm import decide
+from poref.prm import decide
 
 
 def main(options):
@@ -46,7 +46,7 @@ def main(options):
             if age is not None and (not torch.isfinite(age) or not 0 <= age.item() <= 120):
                 raise ValueError("A finite age in [0,120] is required")
             probabilities = model(images, age).sigmoid().cpu().tolist()
-            if config["aggregation"] == "pdm":
+            if config["aggregation"] in ("prm", "pdm"):
                 result = decide(probabilities, window_length=config["window_length"], window_threshold=config["window_threshold"],
                                 transition=[[config["stay_hc"], 1 - config["stay_hc"]], [1 - config["stay_disease"], config["stay_disease"]]],
                                 prior=[config["prior_hc"], 1 - config["prior_hc"]])

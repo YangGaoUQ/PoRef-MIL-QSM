@@ -9,7 +9,7 @@ import numpy as np
 
 from poref.data import load_manifest
 from poref.metrics import evaluate, summarize
-from poref.pdm import decide, entropy_confidence, forward_backward
+from poref.prm import decide, entropy_confidence, forward_backward
 from poref.preprocessing import target_affine
 
 
@@ -64,7 +64,7 @@ class DesignTests(unittest.TestCase):
         undefined = evaluate([0, 0], [0.1, 0.2], [0, 0])
         self.assertIsNone(undefined["auc"])
 
-    def test_pdm_uses_continuous_disease_posterior_and_reports_slice_numbers(self):
+    def test_prm_uses_continuous_disease_posterior_and_reports_slice_numbers(self):
         output = decide([0.8, 0.7, 0.1, 0.2], window_length=2, window_threshold=0.5,
                         transition=[[0.5, 0.5], [0.5, 0.5]], prior=[0.5, 0.5])
         q = np.asarray(output["posterior"])
@@ -77,7 +77,7 @@ class DesignTests(unittest.TestCase):
         self.assertEqual(output["refined_labels"], [1, 1, 0, 0])
 
     def test_zero_confidence_windows_are_excluded_and_json_safe(self):
-        with patch("poref.pdm.forward_backward", return_value=np.array([.5, .5, .8, .8])):
+        with patch("poref.prm.forward_backward", return_value=np.array([.5, .5, .8, .8])):
             result = decide([.5]*4, window_length=2, window_threshold=.7)
         self.assertIsNone(result["window_scores"][0])
         self.assertEqual(result["valid_windows"], [False, True, True])

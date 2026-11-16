@@ -1,4 +1,4 @@
-"""Patient-split PoRef-MIL training, train-only iterative labels, paired PDM."""
+"""Patient-split PoRef-MIL training, train-only iterative labels, paired PRM."""
 import csv
 import json
 import random
@@ -12,7 +12,7 @@ from poref.aggregation import sliding_window_mean, WINDOW_MEAN_FORMULA
 from poref.data import load_manifest, load_patient
 from poref.metrics import evaluate, summarize
 from poref.model import PoRefNet, BagRelabelNet
-from poref.pdm import decide, WINDOW_SCORE_FORMULA
+from poref.prm import decide, WINDOW_SCORE_FORMULA
 
 
 def write_json(path, value):
@@ -79,11 +79,11 @@ def evaluate_patients(model, ids, samples, config, device):
             result = {"patient_name": pid, "true_label": row["label"], "slice_probs": probs.tolist(),
                       "z_indices": list(range(len(probs))), "window_mean_score": window_mean["score"], "window_mean_prediction": window_mean["prediction"],
                       "window_mean": window_mean}
-            if config["aggregation"] == "pdm":
-                pdm = decide(probs, window_length=config["window_length"], window_threshold=config["window_threshold"],
+            if config["aggregation"] == "prm":
+                prm = decide(probs, window_length=config["window_length"], window_threshold=config["window_threshold"],
                              transition=[[config["stay_hc"], 1 - config["stay_hc"]], [1 - config["stay_disease"], config["stay_disease"]]],
                              prior=[config["prior_hc"], 1 - config["prior_hc"]])
-                result.update({"pdm": pdm, "score": pdm["score"], "prediction": pdm["prediction"]})
+                result.update({"prm": prm, "score": prm["score"], "prediction": prm["prediction"]})
             else:
                 result.update(window_mean)
             rows.append(result)
@@ -185,7 +185,7 @@ def main(config):
     if config.get("n_splits") is not None and config["n_splits"] != len(doc["folds"]):
         raise ValueError("--folds does not match the explicit manifest fold count")
     config = {**config, "n_splits": len(doc["folds"]),
-              "score_formula": WINDOW_SCORE_FORMULA if config["aggregation"] == "pdm" else WINDOW_MEAN_FORMULA}
+              "score_formula": WINDOW_SCORE_FORMULA if config["aggregation"] == "prm" else WINDOW_MEAN_FORMULA}
     if config["seed"] + len(doc["folds"]) - 1 >= 2**32:
         raise ValueError("Fold seeds exceed the NumPy seed range")
     for fold in doc["folds"]:
@@ -204,7 +204,7 @@ def main(config):
         raise ValueError("CUDA requested but unavailable")
     device = torch.device(device_name)
     output.mkdir(parents=True, exist_ok=True)
-    write_json(output / "config.json", {**config, "resolved_device": device_name, "torch_version": torch.__version__, "score_formula": WINDOW_SCORE_FORMULA if config["aggregation"] == "pdm" else WINDOW_MEAN_FORMULA, "status": "started"})
+    write_json(output / "config.json", {**config, "resolved_device": device_name, "torch_version": torch.__version__, "score_formula": WINDOW_SCORE_FORMULA if config["aggregation"] == "prm" else WINDOW_MEAN_FORMULA, "status": "started"})
     write_json(output / "resolved_splits.json", doc)
     metrics_all, mean_all = [], []
     for fold_index, fold in enumerate(doc["folds"], 1):
@@ -243,7 +243,7 @@ def main(config):
         save_predictions(output / f"fold_{fold_index}_test_results.csv", rows)
         save_predictions(output / f"fold_{fold_index}_val_results.csv", val_rows)
         write_json(fold_dir / "patient_predictions.json", rows)
-        write_json(fold_dir / "metrics.json", {"validation": val_metrics, "test": metrics, "same_model_without_pdm": mean_metrics})
+        write_json(fold_dir / "metrics.json", {"validation": val_metrics, "test": metrics, "same_model_without_prm": mean_metrics})
         metrics_all.append(metrics)
         mean_all.append(mean_metrics)
     write_json(output / "summary.json", {"test_design": doc["test_design"],

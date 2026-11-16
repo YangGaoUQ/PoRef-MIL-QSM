@@ -1,4 +1,4 @@
-"""Compatibility import for the final forward/backward PDM (no Viterbi)."""
+"""Compatibility import for the final forward/backward PRM (no Viterbi)."""
 from poref.postprocess import main
 
 if __name__ == "__main__":

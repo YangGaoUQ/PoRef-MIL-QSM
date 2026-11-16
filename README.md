@@ -2,34 +2,34 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-This repository implements PoRef-MIL for QSM-based MRI classification with optional multimodal ablations, combining global–local feature extraction, axial self-attention, iterative slice relabeling, and a Posterior Decision Module (PDM). It supports PD/HC and MS/HC experiments.
+PoRef-MIL is a weakly supervised multiple instance learning framework for QSM-based brain disease classification. It evaluates Parkinson’s disease and multiple sclerosis separately against healthy controls. A dual-branch diagnosis network predicts slice abnormality probabilities. Iterative relabeling updates slice supervision during training, and the Posterior Refinement Module (PRM) combines sequence evidence with entropy-based confidence at inference.
 
 ## 🔬 Abstract
 
-Patient-level disease labels do not describe every MRI slice. PoRef-MIL first extracts slice features using a multibranch Transformer/CNN architecture, models context along the Z axis, and updates training-slice supervision over multiple relabeling rounds. PDM then applies a single forward–backward pass to the ordered slice probabilities and combines Shannon entropy, confidence, and sliding windows to produce patient-level classifications and continuous scores.
+The study evaluates an in-house PD cohort of 287 participants and a public MS cohort of 150 participants. Each task uses a fixed holdout test set and five training/validation folds among the remaining participants.
 
 Main components:
 
 - **Multimodal MRI**: QSM, T1w, and other preregistered modalities specified by the experiment.
 - **Global–Local Feature Extraction**: four multibranch Transformer/CNN blocks fuse features through cross-attention.
 - **Iterative Relabeling**: slice predictions for training patients are generated across successive training rounds.
-- **Posterior Decision Module**: bidirectional posteriors and confidence-weighted window averages determine patient-level decisions.
+- **Posterior Refinement Module**: bidirectional posteriors and confidence-weighted window averages determine patient-level decisions.
 - **Age-conditioned FiLM**: sin/cos age encoding and an MLP generate scaling and offset parameters to modulate inputs or features before or after feature extraction.
 
 ## 🏆 Results
 
-PoRef-MIL achieves an AUC of **0.942±0.002** and an ACC of **0.926±0.008** on PD, and an AUC of **0.864±0.0029** and an ACC of **0.825±0.018** on MS. See [Table 2](#table-2) for the full comparison and statistical protocol.
+PoRef-MIL achieves an AUC of **0.942±0.002** and an ACC of **0.926±0.008** on PD, and an AUC of **0.872±0.034** and an ACC of **0.833±0.053** on MS. See [Table 2](#table-2) for the full comparison and statistical protocol.
 
 ## 🏗️ Architecture
 
 ### Network Components
 
 1. **Feature Extraction**: four multibranch blocks per modality combine global attention features and local convolutional features.
-2. **Multimodal Fusion**: cross-modal cross-attention by default, with alternative fusion methods for ablation studies.
+2. **Multimodal fusion** uses concatenation in the documented example.
 3. **Axial Self-Attention**: models slice context only in the relabeler; the diagnostic test network has no axial module.
 4. **Slice Classification**: an MLP outputs a logit per slice; Sigmoid produces disease probabilities.
 5. **Iterative Relabeling**: initialize diagnosis, then alternate a separate bag relabeler with freshly initialized diagnostic networks. Only the trained diagnostic encoder initializes the next relabeler.
-6. **PDM**: a single forward–backward pass, entropy-based confidence, and sliding windows produce patient-level results.
+6. **PRM**: a single forward–backward pass, entropy-based confidence, and sliding windows produce patient-level results.
 
 ```text
 Training: patient labels -> initialize diagnosis
@@ -48,7 +48,7 @@ Testing: QSM -> ordered slices -> four FEBs -> max pooling -> MLP
 - One fixed independent test set; five training/validation folds within the development set; five models evaluated separately.
 - Single-, dual-, and configurable multimodal inputs.
 - Support for 128-slice PD sequences, 96-slice MS sequences, and other explicitly specified lengths.
-- Ablations for K=1–5 total diagnostic training rounds, fusion methods, age-conditioning positions, and PDM.
+- Ablations for one to five diagnostic training rounds, age conditioning, and PRM.
 - Exported patient lists, models, pseudo-labels, slice probabilities, posteriors, ROC data, and per-fold metrics.
 
 ## 📁 Project Structure
@@ -65,7 +65,7 @@ PoRef-MIL/
 ├── classifier/
 │   ├── classifier_model.py      # Shared MLP classification head
 │   ├── classifierNet.py         # Legacy single-modal slice network
-│   └── postProcess.py           # PDM compatibility entry point
+│   └── postProcess.py           # PRM compatibility entry point
 ├── relabel/
 │   ├── selfAttention.py         # Chunked Z-axis self-attention
 │   ├── relabelingNet.py         # Single-modal relabeling reference network
@@ -76,8 +76,8 @@ PoRef-MIL/
 │   ├── data.py                  # Patient split checks and ordered multimodal loading
 │   ├── model.py                 # Main PoRef-MIL model and fusion ablations
 │   ├── experiment.py            # Five-fold, K-round training and evaluation
-│   ├── pdm.py                   # Forward–backward inference and window decisions
-│   ├── postprocess.py           # Standalone PDM for slice-probability CSVs
+│   ├── prm.py                   # Forward–backward inference and window decisions
+│   ├── postprocess.py           # Standalone PRM for slice-probability CSVs
 │   ├── inference.py             # Unlabelled-patient inference with the main model
 │   ├── preprocessing.py         # Physical-grid resampling of registered images
 │   └── metrics.py               # Metrics, ROC data, and mean/std summaries
@@ -210,7 +210,7 @@ Requirements:
 The following PowerShell command trains the QSM model with window length 10 and decision threshold 0.5. Supply the paths and window parameters used for the experiment. Select window parameters using training or validation data; use the test set for final evaluation.
 
 ```powershell
-# QSM PoRef-MIL: fixed test set, five development folds, K=5
+# QSM PoRef-MIL: fixed test set, five development folds, --rounds 5
 python train_val.py `
   --mode poref `
   --data_split_file "D:/splits/pd.json" `
@@ -281,18 +281,18 @@ python -m poref predict `
   --device auto
 ```
 
-`unlabelled.json` only needs a `samples` list. Each patient supplies `patient_id`, `images`, and `slice_axis`; age-conditioned models also require `age`. Labels and folds are unnecessary. Prediction restores the model, modalities, round, FiLM, and PDM configuration from the checkpoint and writes `predictions.json`.
+`unlabelled.json` only needs a `samples` list. Each patient supplies `patient_id`, `images`, and `slice_axis`; age-conditioned models also require `age`. Labels and folds are unnecessary. Prediction restores the model, modalities, round, FiLM, and PRM configuration from the checkpoint and writes `predictions.json`.
 
 This command loads one model at a time. To evaluate five models separately, use five checkpoints and separate output directories.
 
-#### Standalone PDM
+#### Standalone PRM
 
-Apply the same PDM to existing ordered slice probabilities:
+Apply the same PRM to existing ordered slice probabilities:
 
 ```powershell
 python -m poref postprocess `
   --input-dir "D:/results/slice_predictions" `
-  --output "D:/results/pdm" `
+  --output "D:/results/prm" `
   --folds 5 `
   --window-length 10 `
   --window-threshold 0.5 `
@@ -314,20 +314,20 @@ Input CSVs require `patient_name,true_label,slice_probs`. For each model, the co
 | `--learning_rate` | `0.0001` | First-round learning rate; proportionally scales the default round schedule |
 | `--num_epochs` | `300` | Maximum epochs for each diagnostic or relabeling training stage |
 | `--num_folds` | `5` | The main workflow requires a fixed test set and five development train/validation folds |
-| `--rounds` | `5` | K diagnostic training rounds including initialization; K−1 relabeling stages |
-| `--round-lrs` | Default round schedule | Explicit list of exactly K learning rates |
+| `--rounds` | `5` | Total diagnostic training rounds, including one warm-up |
+| `--round-lrs` | Default round schedule | Explicit list of one learning rate per diagnostic round |
 | `--patience` | `50` | Early-stopping patience based on validation AUC |
 | `--weight-decay` | `0.00001` | Adam weight decay |
 | `--alpha` / `--gamma` | `0.5` / `2.0` | Focal Loss parameters |
 | `--relabel-threshold` | `0.5` | Threshold for discrete training-slice pseudo-labels |
-| `--fusion` | `cross-attention` | Fusion method |
+| `--fusion` | Multimodal example | `--fusion concatenation` |
 | `--age-position` | `none` | `none`, `pre`, or `post` |
 | `--supervision` | `iterative` | Iterative supervision or `traditional-mil` mean-supervision ablation |
-| `--aggregation` | `pdm` | Patient-level PDM or `sliding-window-mean` aggregation (`mean` is a compatibility alias) |
+| `--aggregation` | `prm` | Patient-level PRM or `sliding-window-mean` aggregation (`mean` is a compatibility alias) |
 | `--window-length` | Required for both aggregation modes | Sliding-window length L; cannot exceed the slice count |
 | `--window-threshold` | Required for both aggregation modes | Patient decision threshold T_w |
 | `--stay-hc` / `--stay-disease` | `0.9` / `0.9` | State self-transition probabilities |
-| `--prior-hc` | `0.5` | Initial HC probability for PDM |
+| `--prior-hc` | `0.5` | Initial HC probability for PRM |
 | `--expected-slices` | Unrestricted | Check sequence length, e.g. 128 or 96 |
 | `--expected-test-counts` | PD: `26 31`; MS: `10 20` | Expected HC and disease test counts, selected by `--disease-name`; checked for each fold |
 | `--disease-name` | `PD` | Record `PD` or `MS` in the experiment configuration |
@@ -353,7 +353,7 @@ The CNN branches in all four blocks receive the original image. Later blocks rec
 
 ### 2. Axial Self-Attention
 
-Only in the relabeling network, Z-axis attention exchanges context across all Z slices. A `1→64` projection maps scalar features to embeddings, followed by 8-head self-attention, residual connections, a `64→128→64` feed-forward network, and projection back to scalars. Input and output shapes are `[1,Z,N,256]`, where N=256. The MLP-level ablation repeats each component of its fused vector over the last dimension to preserve this shape. The implementation chunks independent feature positions while preserving the entire Z sequence and uses gradient checkpointing during training to control intermediate activation memory.
+Only in the relabeling network, Z-axis attention exchanges context across all Z slices. A `1→64` projection maps scalar features to embeddings, followed by 8-head self-attention, residual connections, a `64→128→64` feed-forward network, and projection back to scalars. Input and output shapes are `[1,Z,N,256]`, where N=256. The implementation chunks independent feature positions while preserving the entire Z sequence and uses gradient checkpointing during training to control intermediate activation memory.
 
 ### 3. Slice Classifier
 
@@ -363,7 +363,7 @@ The diagnostic head receives FEB features; the relabeling head receives Z-attent
 256 → 512 → 1024 → 512 → 256 → 128 → 2 → 1
 ```
 
-ReLU follows each hidden linear layer. The final layer outputs a logit, converted to a disease probability by Sigmoid. The MLP-level ablation repeats each vector component over the last dimension, so max pooling preserves the fused vector.
+ReLU follows each hidden linear layer. The final layer outputs a logit, converted to a disease probability by Sigmoid.
 
 ### 4. Iterative Relabeling
 
@@ -374,11 +374,11 @@ ReLU follows each hidden linear layer. The final layer outputs a logit, converte
 1. **Round 1**: initialize slice labels from training-patient labels and train diagnosis (four FEBs -> max pooling -> MLP). Select its checkpoint using patient validation AUC.
 2. **Relabeling for rounds 2–K**: copy the preceding best diagnostic encoder into a separate relabeler, with fresh Z attention and MLP parameters. The copied pretrained encoder is frozen during relabeling, including its BatchNorm statistics; only Z-axis attention and the relabeling MLP are trained. The FEBs in each new diagnostic network remain trainable. The same slice logits feed Sigmoid probabilities and Softmax slice weights. Their dot product is the patient probability used for patient-label Focal Loss. Select the relabeler using attention-aggregated patient validation AUC.
 3. Load the best relabeler and generate labels only for training slices using Sigmoid probabilities (default threshold 0.5).
-4. Initialize an entirely new diagnostic network and train with the new slice labels, averaging slice Focal Loss within each patient. Diagnostic validation uses the configured patient aggregation (PDM by default). Its best encoder initializes the next relabeler. Test inference uses only the final diagnostic network and patient aggregation.
+4. Initialize an entirely new diagnostic network and train with the new slice labels, averaging slice Focal Loss within each patient. Diagnostic validation uses the configured patient aggregation (PRM by default). Its best encoder initializes the next relabeler. Test inference uses only the final diagnostic network and patient aggregation.
 
 `--rounds 5` means initialization plus four relabeling/diagnosis cycles. Each stage resets Adam, ReduceLROnPlateau and early stopping. Both stages within a round use that round's learning rate and the same epoch/patience settings. Diagnosis and relabeling have separate training stages and checkpoints.
 
-Validation and test evaluation always use actual patient labels and never enter pseudo-label updates. Slice probabilities are discretized using `>= --relabel-threshold` (default 0.5). With K=5 and `--learning_rate=1e-4`, the initial learning rates are:
+Validation and test evaluation always use actual patient labels and never enter pseudo-label updates. Slice probabilities are discretized using `>= --relabel-threshold` (default 0.5). With `--rounds 5` and `--learning_rate=1e-4`, the initial learning rates are:
 
 ```text
 [1e-4, 5e-5, 3e-5, 1e-5, 5e-6]
@@ -386,11 +386,11 @@ Validation and test evaluation always use actual patient labels and never enter 
 
 For K<5, use the first K entries. Changing `--learning_rate` proportionally scales this schedule. `--round-lrs` overrides it with exactly K explicit values. The optimizer and scheduler are recreated for each stage; the best validation weights are loaded before proceeding to the next round.
 
-### 5. Posterior Decision Module
+### 5. Posterior Refinement Module
 
-![Figure 2: Bidirectional posterior refinement and patient-level decisions](docs/figures/figure-2-pdm.png)
+![Figure 2: Bidirectional posterior refinement and patient-level decisions](docs/figures/figure-2-prm.png)
 
-**Figure 2 | Posterior decision workflow.** Ordered slice probabilities enter a two-state HC/disease model. One forward–backward pass produces bidirectional posteriors, which are combined with entropy-based confidence and sliding windows for patient-level classification. State connections show transition relationships; the implementation does not perform optimal-path decoding. [Original PDF](docs/figures/figure-2-pdm.pdf).
+**Figure 2 | Posterior decision workflow.** Ordered slice probabilities enter a two-state HC/disease model. One forward–backward pass produces bidirectional posteriors, which are combined with entropy-based confidence and sliding windows for patient-level classification. State connections show transition relationships; the implementation does not perform optimal-path decoding. [Original PDF](docs/figures/figure-2-prm.pdf).
 
 Apply **one** forward–backward pass to the ordered slice disease probabilities to obtain disease posteriors q_i.
 
@@ -414,13 +414,13 @@ S=\max_j W_j
 
 Windows move by one slice without padding. A zero-confidence-sum window has no defined score, is exported as `null`, and is excluded from the maximum. If every window is invalid, prediction raises an explicit error rather than assigning a healthy diagnosis.
 Predict disease when `S > T_w`; otherwise predict HC. S is the patient ROC-AUC score. Validation, testing, predict and standalone postprocessing use the same formula.
-PDM does not weight hard slice labels, add a low-pass filter, decode a Viterbi path or repeat forward–backward passes.
+PRM does not weight hard slice labels, add a low-pass filter, decode a Viterbi path or repeat forward–backward passes.
 
 #### Slice-level Visualization
 
-![Figure 4: Representative slices and continuous abnormal intervals identified by PDM](docs/figures/figure-4-visualization.png)
+![Figure 4: Representative slices and continuous abnormal intervals identified by PRM](docs/figures/figure-4-visualization.png)
 
-**Figure 4 | Slice and sequence decision examples.** The upper and lower groups show representative images, abnormality probabilities, and PDM-marked continuous abnormal intervals in 128-slice and 96-slice sequences, respectively, illustrating the relationship between local images and sequence decisions. [Original PDF](docs/figures/figure-4-visualization.pdf).
+**Figure 4 | Slice and sequence decision examples.** The upper and lower groups show representative images, abnormality probabilities, and PRM-marked continuous abnormal intervals in 128-slice and 96-slice sequences, respectively, illustrating the relationship between local images and sequence decisions. [Original PDF](docs/figures/figure-4-visualization.pdf).
 
 The heatmaps are supplied paper illustrations. The legacy heatmap script broadcasts a slice probability over the entire slice and cannot directly generate equivalent pixel-level heatmaps.
 
@@ -465,7 +465,7 @@ A trainable MLP maps the age embedding to C scaling parameters and C offsets:
 | `--age-position pre` | Volume normalization → Sin/cos encoding generates γ and β → Modulate input slices per modality → FE → Modality fusion → Classifier (Z attention precedes the head only in the relabeler) | Number of input modalities M |
 | `--age-position post` | FE → Modality fusion → Modulate features with γ and β generated from sin/cos age encoding → Classifier (Z attention precedes the head only in the relabeler) | Feature dimension 256 |
 
-Pre-FE uses one scale and offset per input modality, broadcast over slice pixels. Post-FE modulates the 256 feature channels and broadcasts across tokens. With decision-level fusion, the same FiLM is applied separately to each modality's features before classification (with axial attention only in the relabeler); probabilities are then averaged.
+Pre-FE uses one scale and offset per input modality, broadcast over slice pixels. Post-FE modulates the 256 feature channels and broadcasts across tokens.
 
 Pre-FE and Post-FE are trained and evaluated independently. Each age-conditioned model has only one shared FiLM and does not enable both positions simultaneously. Every training, validation, test, and inference patient must supply a finite `age` in the range 0–120 years. The default training example uses `none`. For age experiments, add `--age-position pre` or `--age-position post` to the full training command and use a separate output directory per experiment.
 
@@ -475,7 +475,7 @@ Diagnosis computes Binary Focal Loss per slice and averages it within each patie
 
 Each stage creates its own Adam optimizer, with weight decay `1e-5` and a maximum of 300 epochs. ReduceLROnPlateau monitors validation AUC with factor 0.5, patience 10 and minimum learning rate `1e-7`. A checkpoint is updated when validation AUC exceeds the saved best value by more than `1e-4`; early stopping follows 50 epochs without that improvement. Runtime arguments configure the exposed parameters; scheduler settings are specified in the training code.
 
-Relabeling validation AUC uses the attention-aggregated patient probability. Diagnostic validation AUC uses the maximum confidence-weighted PDM window score. The `--aggregation sliding-window-mean` ablation uses raw slice probabilities in stride-1 windows of the same length L as PDM. Each window score is the arithmetic mean of its probabilities; the patient score is the maximum window mean. A patient is classified as diseased if any window mean strictly exceeds the same window threshold used by PDM (0.5 in the examples). ROC/AUC uses the maximum window mean as a continuous score. No posterior refinement or confidence weighting is applied.
+Relabeling validation AUC uses the attention-aggregated patient probability. Diagnostic validation AUC uses the maximum confidence-weighted PRM window score. The `--aggregation sliding-window-mean` ablation uses raw slice probabilities in stride-1 windows of the same length L as PRM. Each window score is the arithmetic mean of its probabilities; the patient score is the maximum window mean. A patient is classified as diseased if any window mean strictly exceeds the same window threshold used by PRM (0.5 in the examples). ROC/AUC uses the maximum window mean as a continuous score. No posterior refinement or confidence weighting is applied.
 
 The mean-MIL ablation uses the same backbone, averages slice probabilities into a patient prediction, and computes Focal Loss against actual training-patient labels.
 
@@ -503,11 +503,13 @@ The following are actual experimental results supplied by the author, with numer
 #### PD Dataset
 
 | Method | AUC | ACC | SEN | SPE | PRE | F1 Score |
-|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- |
+| PMIL | 0.890±0.013 | 0.853±0.010 | 0.865±0.014 | 0.838±0.017 | 0.865±0.012 | 0.865±0.009 |
 | AG-SE-ResNeXt | 0.893±0.002 | 0.846±0.015 | 0.858±0.018 | 0.831±0.021 | 0.858±0.016 | 0.858±0.014 |
-| CAAE-CRATNet | 0.901±0.002 | 0.867±0.010 | 0.865±0.014 | 0.869±0.021 | 0.888±0.015 | 0.876±0.009 |
-| MMRNNet | 0.899±0.002 | 0.860±0.012 | 0.832±0.014 | 0.892±0.032 | 0.903±0.025 | 0.866±0.010 |
+| MMRN | 0.899±0.002 | 0.860±0.012 | 0.832±0.014 | 0.892±0.032 | 0.903±0.025 | 0.866±0.010 |
+| CAAE-CRAT | 0.903±0.003 | 0.870±0.020 | 0.858±0.018 | 0.885±0.027 | 0.899±0.023 | 0.878±0.019 |
 | DenseFormer-MoE | 0.906±0.001 | 0.856±0.015 | 0.813±0.014 | <ins>0.908±0.021</ins> | 0.913±0.019 | 0.860±0.014 |
+| AttriMIL | 0.912±0.002 | 0.874±0.008 | 0.884±0.018 | 0.862±0.021 | 0.884±0.015 | 0.884±0.007 |
 | DA-MIDL | 0.914±0.002 | 0.867±0.010 | 0.865±0.014 | 0.869±0.021 | 0.888±0.015 | 0.876±0.009 |
 | TransMIL | <ins>0.927±0.001</ins> | <ins>0.898±0.008</ins> | <ins>0.890±0.018</ins> | <ins>0.908±0.021</ins> | <ins>0.920±0.016</ins> | <ins>0.905±0.008</ins> |
 | PoRef-MIL | **0.942±0.002** | **0.926±0.008** | **0.923±0.018** | **0.931±0.017** | **0.941±0.014** | **0.932±0.008** |
@@ -515,19 +517,21 @@ The following are actual experimental results supplied by the author, with numer
 #### MS Dataset
 
 | Method | AUC | ACC | SEN | SPE | PRE | F1 Score |
-|---|---|---|---|---|---|---|
-| AG-SE-ResNeXt | 0.774±0.0029 | 0.735±0.014 | 0.780±0.027 | 0.690±0.022 | 0.716±0.013 | 0.746±0.015 |
-| CAAE-CRATNet | 0.805±0.0033 | 0.760±0.014 | 0.780±0.027 | 0.740±0.022 | 0.750±0.014 | 0.765±0.015 |
-| MMRNNet | 0.795±0.0027 | 0.745±0.021 | 0.770±0.027 | 0.720±0.027 | 0.734±0.022 | 0.751±0.021 |
-| DenseFormer-MoE | 0.778±0.0025 | 0.730±0.011 | 0.760±0.022 | 0.700±0.035 | 0.718±0.020 | 0.738±0.009 |
-| DA-MIDL | 0.803±0.0025 | 0.760±0.014 | 0.790±0.022 | 0.730±0.027 | 0.746±0.017 | 0.767±0.013 |
-| TransMIL | <ins>0.829±0.0029</ins> | <ins>0.795±0.011</ins> | <ins>0.820±0.027</ins> | <ins>0.770±0.027</ins> | <ins>0.781±0.017</ins> | <ins>0.800±0.012</ins> |
-| PoRef-MIL | **0.864±0.0029** | **0.825±0.018** | **0.850±0.035** | **0.800±0.035** | **0.810±0.025** | **0.829±0.018** |
+| --- | --- | --- | --- | --- | --- | --- |
+| DenseFormer-MoE | 0.783±0.034 | 0.740±0.049 | 0.760±0.042 | 0.700±0.071 | 0.835±0.039 | 0.796±0.040 |
+| PMIL | 0.790±0.021 | 0.740±0.028 | 0.830±0.027 | 0.560±0.055 | 0.791±0.022 | 0.810±0.021 |
+| AG-SE-ResNeXt | 0.792±0.051 | 0.753±0.061 | 0.780±0.057 | 0.700±0.071 | 0.838±0.042 | 0.808±0.049 |
+| DA-MIDL | 0.802±0.033 | 0.773±0.043 | 0.790±0.042 | 0.740±0.055 | 0.858±0.031 | 0.823±0.035 |
+| CAAE-CRAT | 0.812±0.029 | 0.767±0.033 | 0.780±0.027 | 0.740±0.055 | 0.857±0.029 | 0.817±0.026 |
+| AttriMIL | 0.820±0.010 | 0.780±0.018 | **0.870±0.027** | 0.600±0.000 | 0.813±0.005 | 0.840±0.015 |
+| MMRN | 0.838±0.029 | 0.800±0.053 | 0.820±0.057 | 0.760±0.055 | 0.872±0.032 | 0.845±0.043 |
+| TransMIL | <ins>0.851±0.041</ins> | <ins>0.813±0.056</ins> | 0.830±0.045 | <ins>0.780±0.084</ins> | <ins>0.883±0.044</ins> | <ins>0.856±0.043</ins> |
+| PoRef-MIL | **0.872±0.034** | **0.833±0.053** | <ins>0.850±0.050</ins> | **0.800±0.071** | **0.895±0.037** | **0.871±0.042** |
 
 
 **Statistical note:** Values are mean ± standard deviation across five models trained using five-fold training/validation within the development set. All five models were evaluated separately on the same fixed test set. Bold and underlined values indicate the highest and second-highest means within each dataset, respectively; tied means receive the same formatting.
 
-PoRef-MIL obtains the highest mean for all six reported metrics on both datasets. PD AUC and ACC are **0.942±0.002** and **0.926±0.008**; MS AUC and ACC are **0.864±0.0029** and **0.825±0.018**.
+PoRef-MIL achieved AUCs of **0.942±0.002** and **0.872±0.034** and accuracies of **0.926±0.008** and **0.833±0.053** for PD and MS, respectively. AttriMIL achieved the highest MS sensitivity.
 
 AUC: area under the ROC curve; ACC: accuracy; SEN: sensitivity; SPE: specificity; PRE: precision; F1 Score: harmonic mean of precision and sensitivity. Comparison methods are included to report baseline results.
 
@@ -535,19 +539,81 @@ After running the project, inspect `summary.json` for that run's aggregated metr
 
 ### Ablation Studies
 
+#### PRM comparisons
+
+| Model | PD AUC | PD ACC | PD F1 | MS AUC | MS ACC | MS F1 |
+| --- | --- | --- | --- | --- | --- | --- |
+| AttriMIL w/o PRM | 0.912±0.002 | 0.874±0.008 | 0.884±0.007 | 0.820±0.010 | 0.780±0.018 | 0.840±0.015 |
+| AttriMIL + PRM | 0.920±0.003 | 0.888±0.010 | 0.898±0.008 | 0.844±0.012 | 0.807±0.028 | 0.859±0.021 |
+| DA-MIDL w/o PRM | 0.914±0.002 | 0.867±0.010 | 0.876±0.009 | 0.802±0.033 | 0.773±0.043 | 0.823±0.035 |
+| DA-MIDL + PRM | 0.924±0.003 | 0.891±0.015 | 0.899±0.014 | 0.834±0.015 | 0.807±0.028 | 0.850±0.022 |
+| PMIL w/o PRM | 0.890±0.013 | 0.853±0.010 | 0.865±0.009 | 0.790±0.021 | 0.740±0.028 | 0.810±0.021 |
+| PMIL + PRM | 0.912±0.003 | 0.884±0.016 | 0.893±0.015 | 0.830±0.013 | 0.813±0.030 | 0.857±0.023 |
+| TransMIL w/o PRM | 0.927±0.001 | 0.898±0.008 | 0.905±0.008 | 0.851±0.041 | 0.813±0.056 | 0.856±0.043 |
+| TransMIL + PRM | 0.934±0.005 | 0.909±0.015 | 0.916±0.013 | 0.868±0.029 | 0.827±0.043 | 0.868±0.034 |
+| PoRef-MIL w/o PRM 1 | 0.925±0.005 | 0.898±0.015 | 0.906±0.014 | 0.851±0.033 | 0.800±0.033 | 0.845±0.029 |
+| PoRef-MIL w/o PRM 2 | 0.938±0.006 | 0.909±0.015 | 0.918±0.013 | 0.865±0.032 | 0.820±0.038 | 0.863±0.030 |
+| PoRef-MIL (proposed) | 0.942±0.002 | 0.926±0.008 | 0.932±0.008 | 0.872±0.034 | 0.833±0.053 | 0.871±0.042 |
+
+The w/o PRM 1 row uses the final relabeling classifier for direct subject prediction. The w/o PRM 2 row uses the final diagnosis network and the maximum mean of 10-slice windows with stride 1.
+
+#### Relabeling rounds
+
+| Dataset | K | AUC | ACC | SEN | SPE | PRE | F1 Score |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| PD | 0 | 0.661±0.026 | 0.632±0.018 | 0.677±0.023 | 0.577±0.027 | 0.656±0.016 | 0.667±0.017 |
+| PD | 1 | 0.913±0.006 | 0.877±0.018 | 0.890±0.018 | 0.862±0.034 | 0.885±0.025 | 0.888±0.015 |
+| PD | 2 | 0.924±0.005 | 0.898±0.015 | 0.903±0.023 | 0.892±0.017 | 0.909±0.014 | 0.906±0.014 |
+| PD | 3 | 0.932±0.005 | 0.909±0.015 | 0.910±0.014 | 0.908±0.021 | 0.922±0.017 | 0.916±0.013 |
+| PD | 4 | 0.938±0.004 | 0.916±0.008 | 0.916±0.018 | 0.915±0.017 | 0.928±0.012 | 0.922±0.008 |
+| PD | 5 | 0.942±0.002 | 0.926±0.008 | 0.923±0.018 | 0.931±0.017 | 0.941±0.014 | 0.932±0.008 |
+| MS | 0 | 0.613±0.032 | 0.700±0.053 | 0.940±0.042 | 0.220±0.084 | 0.707±0.030 | 0.807±0.034 |
+| MS | 1 | 0.810±0.032 | 0.760±0.049 | 0.790±0.042 | 0.700±0.071 | 0.840±0.037 | 0.814±0.039 |
+| MS | 2 | 0.831±0.032 | 0.787±0.045 | 0.810±0.042 | 0.740±0.055 | 0.861±0.031 | 0.835±0.036 |
+| MS | 3 | 0.854±0.033 | 0.813±0.045 | 0.840±0.042 | 0.760±0.055 | 0.875±0.030 | 0.857±0.035 |
+| MS | 4 | 0.866±0.032 | 0.827±0.043 | 0.850±0.050 | 0.780±0.045 | 0.885±0.024 | 0.867±0.035 |
+| MS | 5 | 0.872±0.034 | 0.833±0.053 | 0.850±0.050 | 0.800±0.071 | 0.895±0.037 | 0.871±0.042 |
+
+#### MRI modalities
+
+| Method | AUC | ACC | SEN | SPE | PRE | F1 Score |
+| --- | --- | --- | --- | --- | --- | --- |
+| PD dataset | PD dataset | PD dataset | PD dataset | PD dataset | PD dataset | PD dataset |
+| T1w | 0.908±0.012 | 0.898±0.015 | 0.903±0.023 | 0.892±0.017 | 0.909±0.014 | 0.906±0.014 |
+| QSM | 0.942±0.002 | 0.926±0.008 | 0.923±0.018 | 0.931±0.017 | 0.941±0.014 | 0.932±0.008 |
+| T1w+QSM | 0.964±0.004 | 0.944±0.015 | 0.955±0.018 | 0.931±0.032 | 0.943±0.025 | 0.949±0.013 |
+| MS Dataset | MS Dataset | MS Dataset | MS Dataset | MS Dataset | MS Dataset | MS Dataset |
+| T1w | 0.844±0.030 | 0.800±0.053 | 0.840±0.042 | 0.720±0.084 | 0.857±0.041 | 0.848±0.040 |
+| QSM | 0.872±0.034 | 0.833±0.053 | 0.850±0.050 | 0.800±0.071 | 0.895±0.037 | 0.871±0.042 |
+| FLAIR | 0.877±0.028 | 0.840±0.049 | 0.860±0.042 | 0.800±0.071 | 0.896±0.037 | 0.877±0.038 |
+| T1w+QSM+FLAIR | 0.887±0.028 | 0.860±0.043 | 0.880±0.027 | 0.820±0.084 | 0.908±0.041 | 0.894±0.032 |
+
+#### Age conditioning
+
+| Age Conditioning | AUC | ACC | SEN | SPE | PRE | F1 Score |
+| --- | --- | --- | --- | --- | --- | --- |
+| PD dataset |  |  |  |  |  |  |
+| w/ FiLM | 0.931±0.006 | 0.916±0.008 | 0.910±0.027 | 0.923±0.027 | 0.935±0.021 | 0.921±0.008 |
+| w/o Encoding | 0.942±0.002 | 0.926±0.008 | 0.923±0.018 | 0.931±0.017 | 0.941±0.014 | 0.932±0.008 |
+| MS Dataset |  |  |  |  |  |  |
+| w/ FiLM | 0.860±0.032 | 0.813±0.061 | 0.820±0.057 | 0.800±0.071 | 0.891±0.040 | 0.854±0.049 |
+| w/o Encoding | 0.872±0.034 | 0.833±0.053 | 0.850±0.050 | 0.800±0.071 | 0.895±0.037 | 0.871±0.042 |
+
+In the results table, K counts relabeling cycles. The current `--rounds` includes warm-up, so a value of 5 runs four relabeling cycles.
+
 | Experimental factor | Configuration |
 |---|---|
 | Single/dual modality | `--modalities T1w`, `QSM`, `QSM T1w` |
-| Fusion method | `--fusion decision-level`, `mlp-level`, `concatenation`, `cross-attention` |
+| Concatenation | `--fusion concatenation` |
 | Total diagnostic training rounds | Independently train `--rounds 1` through `--rounds 5` |
-| Without PDM | `--aggregation sliding-window-mean --window-length 10 --window-threshold 0.5`, any window mean > 0.5 |
+| Without PRM | `--aggregation sliding-window-mean --window-length 10 --window-threshold 0.5`, any window mean > 0.5 |
 | Initial labels versus iterative updates | `--rounds 1` versus multiround `iterative` configurations |
 | Mean-MIL supervision | `--supervision traditional-mil --rounds 1` |
 | Age-conditioning position | `--age-position pre` versus `--age-position post` |
 
-Fusion definitions: **Decision-level** averages probabilities after each modality passes through the shared classification head (axial attention is used only by the relabeler). **MLP-level** pools each modality's tokens, concatenates the vectors, and fuses them with an MLP. **Concatenation** concatenates token features and linearly projects them to a lower dimension. **Cross-Attention** fuses modalities through attention: for two modalities, the first supplies Q and the second supplies K/V to a shared cross-attention computation; its result is added residually to each modality and normalized, followed by a second cross-attention computation with residual addition and normalization. For more than two modalities, fusion proceeds sequentially in `--modalities` order.
+The paper describes concatenation at the input channels. The repository option `--fusion concatenation` concatenates each modality’s FEB token features and projects them linearly, so the fusion stage differs from the paper.
 
-Train K=1–5 ablations independently with the same actual patient splits and seed configuration, using separate output directories. The main PDM experiment also saves sliding-window-mean metrics from the same final model and the same slice predictions to isolate the postprocessing effect.
+Train configurations with one to five diagnostic training rounds independently with the same actual patient splits and seed configuration, using separate output directories. The main PRM experiment also saves sliding-window-mean metrics from the same final model and the same slice predictions to isolate the postprocessing effect.
 
 ## 🧠 Prediction Interpretability
 

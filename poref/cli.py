@@ -44,7 +44,7 @@ def unit_float(value):
     return value
 
 
-def add_pdm_arguments(parser, required=False):
+def add_prm_arguments(parser, required=False):
     parser.add_argument("--window-length", type=positive_int, required=required)
     parser.add_argument("--window-threshold", type=unit_float, required=required)
     parser.add_argument("--stay-hc", type=unit_float, default=0.9)
@@ -79,8 +79,8 @@ def build_parser():
     train.add_argument("--fusion", choices=("cross-attention", "concatenation", "mlp-level", "decision-level"), default="cross-attention")
     train.add_argument("--age-position", choices=("none", "pre", "post"), default="none")
     train.add_argument("--supervision", choices=("iterative", "traditional-mil"), default="iterative")
-    train.add_argument("--aggregation", choices=("pdm", "sliding-window-mean", "mean"), default="pdm",
-                       help="PDM or maximum raw-probability window mean; mean is a compatibility alias")
+    train.add_argument("--aggregation", choices=("prm", "sliding-window-mean", "mean", "pdm"), default="prm",
+                       help="PRM or maximum raw-probability window mean; mean is a compatibility alias")
     train.add_argument("--seed", type=int, default=2025)
     train.add_argument("--alpha", type=unit_float, default=0.5)
     train.add_argument("--gamma", type=nonnegative_float, default=2.0)
@@ -90,13 +90,13 @@ def build_parser():
     train.add_argument("--expected-slices", type=positive_int)
     train.add_argument("--disease-name", choices=("PD", "MS"), default="PD")
     train.add_argument("--expected-test-counts", nargs=2, type=positive_int, metavar=("HC", "DISEASE"))
-    add_pdm_arguments(train)
+    add_prm_arguments(train)
 
-    post = commands.add_parser("postprocess", help="Apply single-pass forward-backward PDM to ordered slice probabilities")
+    post = commands.add_parser("postprocess", help="Apply single-pass forward-backward PRM to ordered slice probabilities")
     post.add_argument("--input-dir", type=Path, required=True)
     post.add_argument("--output", dest="save_dir", type=Path, required=True)
     post.add_argument("--folds", dest="n_folds", type=positive_int, default=5)
-    add_pdm_arguments(post, required=True)
+    add_prm_arguments(post, required=True)
     post.add_argument("--dry-run", action="store_true")
 
     heat = commands.add_parser("heatmap", help="Export single-modal slice probabilities and volume masks")
@@ -145,6 +145,8 @@ def resolve_config(parser, args):
                 parser.error("traditional-mil requires --rounds 1")
             if args.window_length is None or args.window_threshold is None:
                 parser.error("Patient aggregation requires explicit --window-length and --window-threshold")
+            if args.aggregation == "pdm":
+                config["aggregation"] = "prm"
             if args.aggregation == "mean":
                 config["aggregation"] = "sliding-window-mean"
             if args.round_lrs is not None and len(args.round_lrs) != args.rounds:

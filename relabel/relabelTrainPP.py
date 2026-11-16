@@ -1,4 +1,4 @@
-"""Compatibility entry: final evaluation is patient-level PDM, not slice AUC."""
+"""Compatibility entry: final evaluation is patient-level PRM, not slice AUC."""
 from poref.experiment import main
 
 if __name__ == "__main__":

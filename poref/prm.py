@@ -68,7 +68,7 @@ def decide(values, *, window_length, window_threshold, transition=None, prior=No
     valid = weight_sum > 0
     if not valid.any():
         # The documented weighted average is undefined, not a healthy result.
-        raise ValueError("PDM cannot produce a patient score: all windows have zero total confidence")
+        raise ValueError("PRM cannot produce a patient score: all windows have zero total confidence")
     windows = np.full_like(numerator, np.nan)
     np.divide(numerator, weight_sum, out=windows, where=valid)
     start = int(np.nanargmax(windows))

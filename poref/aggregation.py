@@ -1,7 +1,7 @@
-"""Patient prediction from raw slice probabilities without PDM."""
+"""Patient prediction from raw slice probabilities without PRM."""
 import numpy as np
 
-from poref.pdm import probabilities
+from poref.prm import probabilities
 
 WINDOW_MEAN_FORMULA = "max_j mean(p[j:j+L])"
 

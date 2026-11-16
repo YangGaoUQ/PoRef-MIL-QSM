@@ -244,18 +244,18 @@ class ModelTests(unittest.TestCase):
             relabel_checkpoint = torch.load(root / "run/fold_1/best_relabel_for_round_2.pth", weights_only=True)
             self.assertEqual(diagnostic_checkpoint["role"], "diagnosis")
             self.assertEqual(relabel_checkpoint["role"], "relabel")
-            from poref.pdm import WINDOW_SCORE_FORMULA
+            from poref.prm import WINDOW_SCORE_FORMULA
             self.assertEqual(diagnostic_checkpoint["config"]["score_formula"], WINDOW_SCORE_FORMULA)
             stages = json.loads((root / "run/fold_1/training_log.json").read_text())
             self.assertEqual([r["stage"] for r in stages], ["diagnosis", "relabel", "diagnosis"])
             self.assertEqual(cached["source_module"], "bag_relabeler")
-            postprocess({**config, "input_dir": str(root / "run"), "save_dir": str(root / "pdm"), "n_folds": 1})
-            self.assertTrue((root / "pdm/fold_1_pdm_results.csv").is_file())
+            postprocess({**config, "input_dir": str(root / "run"), "save_dir": str(root / "prm"), "n_folds": 1})
+            self.assertTrue((root / "prm/fold_1_prm_results.csv").is_file())
             original = json.loads((root / "run/fold_1/patient_predictions.json").read_text())
-            reprocessed = json.loads((root / "pdm/fold_1_pdm.json").read_text())["patients"]
+            reprocessed = json.loads((root / "prm/fold_1_prm.json").read_text())["patients"]
             self.assertEqual([p["score"] for p in original], [p["score"] for p in reprocessed])
             (root / "run/fold_1_test_results.csv").rename(root / "run/fold_1_test_slice_results.csv")
-            postprocess({**config, "input_dir": str(root / "run"), "save_dir": str(root / "pdm_pp"), "n_folds": 1})
+            postprocess({**config, "input_dir": str(root / "run"), "save_dir": str(root / "prm_pp"), "n_folds": 1})
             from poref.inference import main as predict
             unlabelled = {"samples": [{key: value for key, value in row.items() if key != "label"} for row in manifest["samples"][-2:]]}
             patients_file = root / "unlabelled.json"
@@ -269,7 +269,7 @@ class ModelTests(unittest.TestCase):
             self.assertEqual([p["score"] for p in original], [p["score"] for p in predicted])
             self.assertTrue(all(p["score_formula"] == WINDOW_SCORE_FORMULA for p in predicted))
 
-    def test_without_pdm_evaluation_uses_local_window_score(self):
+    def test_without_prm_evaluation_uses_local_window_score(self):
         from poref.experiment import evaluate_patients
         class SliceModel(torch.nn.Module):
             def forward(self, images, age=None):

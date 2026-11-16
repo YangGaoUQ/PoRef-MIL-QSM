@@ -1,11 +1,11 @@
-"""PDM over existing ordered slice CSVs, independent of any model family."""
+"""PRM over existing ordered slice CSVs, independent of any model family."""
 import ast
 import csv
 import json
 from pathlib import Path
 
 from poref.metrics import evaluate, summarize
-from poref.pdm import decide, WINDOW_SCORE_FORMULA
+from poref.prm import decide, WINDOW_SCORE_FORMULA
 
 
 def main(config):
@@ -41,8 +41,8 @@ def main(config):
                 records.append({"patient_name": pid, "true_label": int(row["true_label"]), **result})
         metrics = evaluate([r["true_label"] for r in records], [r["score"] for r in records], [r["prediction"] for r in records])
         summaries.append(metrics)
-        (output / f"fold_{fold}_pdm.json").write_text(json.dumps({"patients": records, "metrics": metrics}, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
-        with (output / f"fold_{fold}_pdm_results.csv").open("w", newline="", encoding="utf-8") as handle:
+        (output / f"fold_{fold}_prm.json").write_text(json.dumps({"patients": records, "metrics": metrics}, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
+        with (output / f"fold_{fold}_prm_results.csv").open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=("patient_name", "true_label", "score", "prediction"))
             writer.writeheader()
             writer.writerows({key: r[key] for key in writer.fieldnames} for r in records)
